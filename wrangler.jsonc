@@ -1,0 +1,36 @@
+/**
+ * postline-mcp Worker configuration.
+ * https://developers.cloudflare.com/workers/wrangler/configuration/
+ *
+ * Secrets (never put these in this file):
+ *   npx wrangler secret put LINKEDIN_CLIENT_ID
+ *   npx wrangler secret put LINKEDIN_CLIENT_SECRET
+ *   npx wrangler secret put COOKIE_ENCRYPTION_KEY   # any random string, e.g. `openssl rand -hex 32`
+ *   npx wrangler secret put ALLOWED_MEMBER_IDS      # your LinkedIn member ID; the sign-in page shows it
+ */
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "postline-mcp",
+	"main": "src/index.ts",
+	"compatibility_date": "2025-03-10",
+	"compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+	"vars": {
+		// The URL Claude connects to. Every token is bound to it.
+		// Change to your deployed URL, e.g. https://postline-mcp.<your-subdomain>.workers.dev/mcp
+		"MCP_RESOURCE": "http://localhost:8788/mcp",
+		// LinkedIn REST API version (YYYYMM). LinkedIn retires versions after about a year.
+		"LINKEDIN_VERSION": "202609"
+	},
+	"kv_namespaces": [
+		{
+			// Holds OAuth grants (tokens are encrypted by the OAuth provider) and per-user post records.
+			// No id needed: `wrangler deploy` creates the namespace on first deploy and remembers it.
+			"binding": "OAUTH_KV"
+		}
+	],
+	"observability": { "enabled": true },
+	"dev": { "port": 8788 },
+	"secrets": {
+		"required": ["LINKEDIN_CLIENT_ID", "LINKEDIN_CLIENT_SECRET", "COOKIE_ENCRYPTION_KEY"]
+	}
+}
