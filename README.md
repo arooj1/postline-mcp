@@ -2,7 +2,7 @@
 
 An open-source MCP connector that lets Claude draft, publish, edit and delete posts on **your own** LinkedIn profile — using only LinkedIn's official API.
 
-> **Status:** Phase 0 (API verification). Not usable yet.
+> **Status:** Phase 0 complete (API verified Nov 13, 2026). Phase 1 in progress. Not usable yet.
 >
 > Not affiliated with, endorsed by, or sponsored by LinkedIn Corporation. LinkedIn is a trademark of LinkedIn Corporation.
 
@@ -20,10 +20,10 @@ postline-mcp is built on three rules:
 
 | Capability | Status | Why |
 |---|---|---|
-| Publish a post (text, link, image) to your profile | ✅ Planned | Self-serve `w_member_social` permission |
+| Publish a post (text, link, image) to your profile | ✅ Verified (text) | Self-serve `w_member_social` permission |
 | Comment on / react to a post (by URL) | ✅ Planned | Same permission |
-| Delete your own post | ✅ Planned | Same permission |
-| Edit your own post's text | 🔍 Being verified | See Phase 0 |
+| Delete your own post | ✅ Verified | Same permission |
+| Edit your own post's text (in place, keeps likes and comments) | ✅ Verified | Same permission; `PARTIAL_UPDATE` on `/rest/posts` |
 | List posts you made **through this tool** | ✅ Planned | Kept in the connector's own post ledger |
 | Import your post history | ✅ Planned | From LinkedIn's "Download your data" export |
 | Read your feed, others' posts, comments, analytics | ❌ Not possible | `r_member_social` is closed by LinkedIn |
@@ -45,7 +45,7 @@ You deploy your own copy on Cloudflare's free tier with your own LinkedIn develo
 
 ## Roadmap
 
-- [ ] **Phase 0** — Verify post / edit / delete against the live API (`spike/`)
+- [x] **Phase 0** — Verify post / edit / delete against the live API (`spike/`) — all passed, LinkedIn-Version 202609
 - [ ] **Phase 1** — Core tools: `get_me`, `draft_post`, `publish_post`, `edit_post`, `delete_post`, `list_my_posts`, `comment`, `react`
 - [ ] **Phase 2** — Remote MCP connector on Cloudflare Workers with OAuth, per-user storage
 - [ ] **Phase 3** — One-click "Deploy to Cloudflare", CI, release
