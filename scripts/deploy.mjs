@@ -23,7 +23,19 @@ if (missing.length) {
 	fail(`Missing: ${missing.join(", ")}. Add them under GitHub → Settings → Secrets and variables → Actions.`);
 }
 
-const resource = process.env.MCP_RESOURCE.trim();
+// Pasted secrets often carry a trailing space or newline, which Cloudflare rejects as
+// "Invalid access token". Trim everything we pass on.
+for (const name of [...REQUIRED_ENV, ...REQUIRED_SECRETS, ...OPTIONAL_SECRETS]) {
+	if (process.env[name] !== undefined) process.env[name] = process.env[name].trim();
+}
+if (!/^[A-Za-z0-9_-]{30,}$/.test(process.env.CLOUDFLARE_API_TOKEN)) {
+	fail("CLOUDFLARE_API_TOKEN doesn't look like a Cloudflare API token (letters, digits, - and _ only). Re-copy the token value shown once after creating it, not the token ID or name.");
+}
+if (!/^[0-9a-f]{32}$/.test(process.env.CLOUDFLARE_ACCOUNT_ID)) {
+	fail("CLOUDFLARE_ACCOUNT_ID should be 32 characters of 0-9 and a-f (Workers & Pages page → Account ID).");
+}
+
+const resource = process.env.MCP_RESOURCE;
 if (!/^https:\/\/[^/]+\/mcp$/.test(resource)) {
 	fail(`MCP_RESOURCE must look like https://<worker>.workers.dev/mcp (got "${resource}").`);
 }
