@@ -236,7 +236,13 @@ export async function listMyPosts(ctx: ToolContext, input: In<"list_my_posts">):
 	}
 	for (const p of history?.posts ?? []) {
 		if (p.urn && seen.has(p.urn)) continue;
-		items.push({ date: p.date, url: p.url || (p.urn ? postUrl(p.urn) : ""), preview: p.text, source: "imported" });
+		const isArticle = p.kind === "article";
+		items.push({
+			date: p.date,
+			url: p.url || (p.urn ? postUrl(p.urn) : ""),
+			preview: isArticle ? `Article: ${p.title ?? ""} — ${p.text}` : p.text,
+			source: "imported",
+		});
 	}
 	if (items.length === 0) {
 		return "No posts yet. postline knows about posts published through it, plus any history you import with create_import_link. LinkedIn doesn't let self-serve apps read your post history directly.";
@@ -247,7 +253,10 @@ export async function listMyPosts(ctx: ToolContext, input: In<"list_my_posts">):
 		(p, i) =>
 			`${i + 1}. ${p.date.slice(0, 10)}${p.source === "imported" ? " (imported)" : ""} — ${p.url || "no link"}\n   ${p.preview.replace(/\s+/g, " ").slice(0, 140)}`,
 	);
-	const historyNote = history ? ` History imported ${history.importedAt.slice(0, 10)} (${history.posts.length} posts).` : "";
+	const articles = history?.posts.filter((p) => p.kind === "article").length ?? 0;
+	const historyNote = history
+		? ` History imported ${history.importedAt.slice(0, 10)} (${history.posts.length - articles} posts, ${articles} articles).`
+		: "";
 	return [`Showing ${shown.length} of ${items.length} post(s), newest first.${historyNote}`, ...lines].join("\n");
 }
 
@@ -268,7 +277,7 @@ const SEARCH_TEXT_BUDGET = 24_000;
 export async function searchMyPosts(ctx: ToolContext, input: In<"search_my_posts">): Promise<string> {
 	const [history, own] = await Promise.all([ctx.store.getHistory(), ctx.store.listPosts(100)]);
 	const ownFull = await Promise.all(own.map((p) => ctx.store.getPost(p.urn)));
-	type Item = { date: string; url: string; text: string };
+	type Item = { date: string; url: string; text: string; title?: string };
 	const seen = new Set<string>();
 	const all: Item[] = [];
 	for (const p of ownFull) {
@@ -278,14 +287,19 @@ export async function searchMyPosts(ctx: ToolContext, input: In<"search_my_posts
 	}
 	for (const p of history?.posts ?? []) {
 		if (p.urn && seen.has(p.urn)) continue;
-		all.push({ date: p.date, url: p.url || (p.urn ? postUrl(p.urn) : ""), text: p.text });
+		all.push({
+			date: p.date,
+			url: p.url || (p.urn ? postUrl(p.urn) : ""),
+			text: p.text,
+			title: p.kind === "article" ? p.title || "(untitled article)" : undefined,
+		});
 	}
 	if (all.length === 0) {
 		return "No posts to search yet. Use create_import_link to import your LinkedIn post history.";
 	}
 	const words = (input.query ?? "").toLowerCase().split(/\s+/).filter(Boolean);
 	const matches = all
-		.filter((p) => words.every((w) => p.text.toLowerCase().includes(w)))
+		.filter((p) => words.every((w) => `${p.title ?? ""} ${p.text}`.toLowerCase().includes(w)))
 		.sort((a, b) => b.date.localeCompare(a.date));
 	if (matches.length === 0) return `No posts contain: ${words.join(" ")}. Searched ${all.length} posts.`;
 
@@ -293,13 +307,14 @@ export async function searchMyPosts(ctx: ToolContext, input: In<"search_my_posts
 	let budget = SEARCH_TEXT_BUDGET;
 	for (const p of matches.slice(0, input.limit)) {
 		const text = p.text.length > budget ? `${p.text.slice(0, Math.max(0, budget))}… [truncated]` : p.text;
-		out.push(`--- ${p.date.slice(0, 10)} ${p.url}\n${text}`);
+		const label = p.title ? `ARTICLE "${p.title}"` : "POST";
+		out.push(`--- ${label} · ${p.date.slice(0, 10)} · ${p.url || "no link"}\n${text}`);
 		budget -= text.length;
 		if (budget <= 0) break;
 	}
 	return [
 		`${matches.length} matching post(s) out of ${all.length}; showing ${out.length}, newest first.`,
-		"Use these as examples of the user's own voice, topics and formatting. Don't copy them; avoid repeating posts they've already written.",
+		"Use these as examples of the user's own voice, topics and formatting (articles are long-form; posts show feed style). Don't copy them; avoid repeating what they've already written.",
 		...out,
 	].join("\n\n");
 }

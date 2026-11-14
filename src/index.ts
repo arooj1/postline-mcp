@@ -125,7 +125,7 @@ function createServer() {
 		{
 			title: "Search my LinkedIn posts",
 			description:
-				"Returns the full text of the user's past LinkedIn posts (imported history plus posts made through postline), optionally filtered by words. Use it to write new posts in the user's own voice and to avoid repeating topics they've already covered.",
+				"Returns the full text of the user's past LinkedIn posts and articles (imported history plus posts made through postline), optionally filtered by words. Use it to write new posts in the user's own voice and to avoid repeating topics they've already covered.",
 			inputSchema: schemas.search_my_posts,
 			annotations: { readOnlyHint: true, openWorldHint: false },
 		},

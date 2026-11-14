@@ -11,7 +11,7 @@ When you connect your LinkedIn account, your copy of postline-mcp receives:
 - **Your basic profile** (name, profile photo, LinkedIn member ID), through the `openid` and `profile` permissions, to identify you as the author of posts.
 - **An access token** that lets it publish, edit, comment and react on your behalf, through the `w_member_social` permission.
 - **A record of posts you create through it** (post ID, text, date), so you can list, edit and delete them later.
-- **Your post history, only if you import it** (date, text, link, attached URL, visibility) from your own LinkedIn data export. The export file is read in your browser; only those post fields are sent to your deployment. Other files in the export (connections, messages and so on) are never read or uploaded.
+- **Your post and article history, only if you import it** (date, title, text, link, attached URL, visibility) from your own LinkedIn data export. The export file is read in your browser; only those post fields are sent to your deployment. Other files in the export (connections, messages and so on) are never read or uploaded.
 
 ## Where it is stored
 

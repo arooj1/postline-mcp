@@ -8,11 +8,17 @@
  */
 
 import {
+	collectExportPosts,
+	decodeEntities,
 	extractSharesCsv,
 	findZipEntry,
+	htmlToText,
+	listZipEntries,
 	nextDelimiter,
+	parseArticle,
 	parseCsv,
 	parseShares,
+	readZipText,
 	toIsoDate,
 	urnFromLink,
 } from "./importer";
@@ -20,7 +26,21 @@ import {
 // esbuild (keepNames) may wrap inner functions in __name(); define a no-op for the browser.
 const CLIENT_LIBRARY = [
 	"const __name = (fn) => fn;",
-	...[parseCsv, nextDelimiter, toIsoDate, urnFromLink, parseShares, findZipEntry, extractSharesCsv].map((f) =>
+	...[
+		parseCsv,
+		nextDelimiter,
+		toIsoDate,
+		urnFromLink,
+		parseShares,
+		listZipEntries,
+		findZipEntry,
+		readZipText,
+		extractSharesCsv,
+		decodeEntities,
+		htmlToText,
+		parseArticle,
+		collectExportPosts,
+	].map((f) =>
 		f.toString(),
 	),
 ].join("\n");
@@ -46,8 +66,8 @@ export function renderImportPage(): string {
 	return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Import LinkedIn history · postline</title><style>${STYLE}</style></head><body>
 <h1><img src="https://raw.githubusercontent.com/arooj1/postline-mcp/main/assets/logo.png" alt="">Import your LinkedIn post history</h1>
-<p class="muted">Upload the ZIP from LinkedIn's <b>Get a copy of your data</b> (with Posts selected), or the <b>Shares.csv</b> inside it.
-The file is read in this browser; only your posts' date, text and links are sent to your postline server. This link works once and expires 15 minutes after it was created.</p>
+<p class="muted">Upload the ZIP from LinkedIn's <b>Get a copy of your data</b>. Your posts (<b>Shares.csv</b>) and articles are imported; nothing else in the archive is read.
+The file is read in this browser; only each post's or article's date, title, text and links are sent to your postline server. This link works once and expires 15 minutes after it was created.</p>
 <label class="drop" id="drop"><input type="file" id="file" accept=".zip,.csv" hidden><span id="pick">Choose or drop the file here</span></label>
 <button id="go" disabled>Import</button>
 <div id="status" role="status"></div>
@@ -67,14 +87,13 @@ go.addEventListener("click", async () => {
   go.disabled = true; show("Reading the file…");
   try {
     const bytes = new Uint8Array(await chosen.arrayBuffer());
-    const csv = await extractSharesCsv(bytes, chosen.name);
-    const { posts, skipped } = parseShares(csv);
-    if (posts.length === 0) throw new Error("No posts found in Shares.csv.");
-    show("Found " + posts.length + " posts. Uploading…");
+    const { posts, skipped, postCount, articleCount } = await collectExportPosts(bytes, chosen.name);
+    if (posts.length === 0) throw new Error("No posts or articles with text were found in that file.");
+    show("Found " + postCount + " posts and " + articleCount + " articles. Uploading…");
     const res = await fetch(location.pathname, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ posts }) });
     const out = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(out.error || ("Upload failed (HTTP " + res.status + ")."));
-    show("Imported " + out.imported + " posts (" + out.from + " to " + out.to + ")." + (skipped ? " Skipped " + skipped + " rows without text." : "") +
+    show("Imported " + postCount + " posts and " + articleCount + " articles (" + out.from + " to " + out.to + ")." + (skipped ? " Skipped " + skipped + " empty drafts or rows without text." : "") +
       "\\n\\nYou can close this tab and go back to Claude. Try: \\"search my posts about AI\\".", "ok");
   } catch (err) {
     show(err && err.message ? err.message : String(err), "err");

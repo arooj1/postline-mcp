@@ -1,8 +1,12 @@
 /**
  * Reads the post history from LinkedIn's "Get a copy of your data" export.
  *
- * The export is a ZIP; posts live in Shares.csv with columns:
- *   Date, ShareLink, ShareCommentary, SharedUrl, MediaUrl, Visibility
+ * The export is a ZIP. Two parts are imported:
+ *   - Shares.csv (feed posts), columns: Date, ShareLink, ShareCommentary, SharedUrl, MediaUrl, Visibility
+ *   - Articles/Articles/*.html (long-form articles), one HTML file each, with
+ *     <h1><a href="…/pulse/…">Title</a></h1>, <p class="created">Created on YYYY-MM-DD HH:MM</p>,
+ *     <p class="published">Published on YYYY-MM-DD HH:MM | ---</p>, then the body in a <div>.
+ *     Unpublished drafts have "Published on ---" and are often empty.
  *
  * These functions run in the user's BROWSER on the upload page (see import-page.ts):
  * unzipping and parsing a large history takes more CPU than a free-plan Worker allows
@@ -12,6 +16,10 @@
  */
 
 export interface ImportedPost {
+	/** "post" (Shares.csv) or "article" (Articles/*.html). Missing means post. */
+	kind?: "post" | "article";
+	/** Article title. */
+	title?: string;
 	/** urn:li:share / ugcPost / activity, when the ShareLink contains one. */
 	urn?: string;
 	url: string;
@@ -24,7 +32,7 @@ export interface ImportedPost {
 }
 
 /** Limits enforced on upload. */
-export const IMPORT_LIMITS = { maxPosts: 10_000, maxTextChars: 10_000, maxUrlChars: 2_000, maxBodyBytes: 20 * 1024 * 1024 };
+export const IMPORT_LIMITS = { maxPosts: 10_000, maxTextChars: 60_000, maxUrlChars: 2_000, maxBodyBytes: 20 * 1024 * 1024 };
 
 /** RFC 4180 CSV parser: quoted fields, escaped quotes (""), commas and newlines inside quotes. */
 export function parseCsv(input: string): string[][] {
@@ -145,14 +153,15 @@ export function parseShares(csv: string): { posts: ImportedPost[]; skipped: numb
 	return { posts, skipped };
 }
 
-/**
- * Finds a file in a ZIP by reading its central directory. Returns the raw (possibly
- * deflated) bytes and the compression method: 0 = stored, 8 = deflate.
- */
-export function findZipEntry(
-	bytes: Uint8Array,
-	match: (name: string) => boolean,
-): { name: string; method: number; data: Uint8Array } | null {
+export interface ZipEntry {
+	name: string;
+	/** 0 = stored, 8 = deflate */
+	method: number;
+	data: Uint8Array;
+}
+
+/** Lists files in a ZIP whose names match, by reading its central directory. */
+export function listZipEntries(bytes: Uint8Array, match: (name: string) => boolean): ZipEntry[] {
 	const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 	let eocd = -1;
 	for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 65_557); i--) {
@@ -165,6 +174,7 @@ export function findZipEntry(
 	const count = view.getUint16(eocd + 10, true);
 	let p = view.getUint32(eocd + 16, true);
 	const decoder = new TextDecoder();
+	const out: ZipEntry[] = [];
 	for (let k = 0; k < count; k++) {
 		if (view.getUint32(p, true) !== 0x02014b50) break;
 		const method = view.getUint16(p + 10, true);
@@ -178,11 +188,24 @@ export function findZipEntry(
 			const lNameLen = view.getUint16(localOffset + 26, true);
 			const lExtraLen = view.getUint16(localOffset + 28, true);
 			const start = localOffset + 30 + lNameLen + lExtraLen;
-			return { name, method, data: bytes.subarray(start, start + compressedSize) };
+			out.push({ name, method, data: bytes.subarray(start, start + compressedSize) });
 		}
 		p += 46 + nameLen + extraLen + commentLen;
 	}
-	return null;
+	return out;
+}
+
+/** First matching ZIP entry, or null. */
+export function findZipEntry(bytes: Uint8Array, match: (name: string) => boolean): ZipEntry | null {
+	return listZipEntries(bytes, match)[0] ?? null;
+}
+
+/** Decompresses a ZIP entry to text using the platform's DecompressionStream. */
+export async function readZipText(entry: ZipEntry): Promise<string> {
+	if (entry.method === 0) return new TextDecoder().decode(entry.data);
+	if (entry.method !== 8) throw new Error(`${entry.name} uses an unsupported compression method (${entry.method}).`);
+	const stream = new Blob([entry.data]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+	return await new Response(stream).text();
 }
 
 /** Finds Shares.csv in an uploaded ZIP (or accepts the CSV itself) and returns its text. */
@@ -198,10 +221,96 @@ export async function extractSharesCsv(bytes: Uint8Array, filename: string): Pro
 			"No Shares.csv in that archive. When requesting your data from LinkedIn, include Posts (sometimes labelled Shares).",
 		);
 	}
-	if (entry.method === 0) return new TextDecoder().decode(entry.data);
-	if (entry.method !== 8) throw new Error(`Shares.csv uses an unsupported compression method (${entry.method}).`);
-	const stream = new Blob([entry.data]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
-	return await new Response(stream).text();
+	return readZipText(entry);
+}
+
+/** Decodes the HTML entities LinkedIn's export uses (named basics plus numeric). */
+export function decodeEntities(text: string): string {
+	const named: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
+	return text.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, code: string) => {
+		if (code[0] === "#") {
+			const n = code[1] === "x" || code[1] === "X" ? parseInt(code.slice(2), 16) : parseInt(code.slice(1), 10);
+			return Number.isFinite(n) && n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : m;
+		}
+		return named[code.toLowerCase()] ?? m;
+	});
+}
+
+/** Converts article HTML to readable plain text, keeping paragraphs, headings and list items. */
+export function htmlToText(html: string): string {
+	const text = html
+		.replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, "")
+		.replace(/<br\s*\/?>/gi, "\n")
+		.replace(/<li[^>]*>/gi, "\n- ")
+		.replace(/<hr[^>]*>/gi, "\n\n---\n\n")
+		.replace(/<\/(p|h[1-6]|blockquote|li|ol|ul|div|pre)>/gi, "\n\n")
+		.replace(/<[^>]+>/g, "");
+	return decodeEntities(text)
+		.split("\n")
+		.map((line) => line.replace(/[ \t]+/g, " ").trim())
+		.join("\n")
+		.replace(/\n- \n+/g, "\n- ")
+		.replace(/\n{3,}/g, "\n\n")
+		.replace(/(\n- [^\n]*)\n\n(?=- )/g, "$1\n")
+		.replace(/(\n- [^\n]*)\n\n(?=- )/g, "$1\n")
+		.trim();
+}
+
+/** Parses one exported article. Returns null for empty drafts. */
+export function parseArticle(html: string): ImportedPost | null {
+	const h1 = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1] ?? "";
+	const title = htmlToText(h1) || htmlToText(html.match(/<title>([\s\S]*?)<\/title>/i)?.[1] ?? "");
+	const link = h1.match(/href="(https:\/\/www\.linkedin\.com\/pulse\/[^"]+)"/i)?.[1] ?? "";
+	const created = html.match(/class="created"[^>]*>\s*Created on ([^<]*)</i)?.[1] ?? "";
+	const published = html.match(/class="published"[^>]*>\s*Published on ([^<]*)</i)?.[1] ?? "";
+	const afterMeta = html.split(/class="published"[^>]*>[^<]*<\/p>/i)[1] ?? "";
+	const bodyHtml = afterMeta.replace(/<\/body>[\s\S]*$/i, "");
+	const text = htmlToText(bodyHtml);
+	const date = toIsoDate(published) ?? toIsoDate(created);
+	if (!text || !date) return null;
+	const post: ImportedPost = { kind: "article", title, date, text, url: link };
+	if (!toIsoDate(published)) post.visibility = "DRAFT";
+	return post;
+}
+
+/** Reads everything importable from an upload: Shares.csv posts and Articles/*.html. */
+export async function collectExportPosts(
+	bytes: Uint8Array,
+	filename: string,
+): Promise<{ posts: ImportedPost[]; skipped: number; postCount: number; articleCount: number }> {
+	const isZip = bytes.length > 3 && bytes[0] === 0x50 && bytes[1] === 0x4b;
+	if (!isZip) {
+		const { posts, skipped } = parseShares(await extractSharesCsv(bytes, filename));
+		return { posts, skipped, postCount: posts.length, articleCount: 0 };
+	}
+	const shares = findZipEntry(bytes, (name) => /(^|\/)shares\.csv$/i.test(name));
+	const articleEntries = listZipEntries(bytes, (name) => /(^|\/)articles\/.*\.html?$/i.test(name));
+	if (!shares && articleEntries.length === 0) {
+		throw new Error(
+			"No posts or articles in that archive. Request LinkedIn's full archive (\"Download larger data archive\"), which includes Shares.csv.",
+		);
+	}
+	const posts: ImportedPost[] = [];
+	let skipped = 0;
+	let postCount = 0;
+	if (shares) {
+		const parsed = parseShares(await readZipText(shares));
+		posts.push(...parsed.posts);
+		skipped += parsed.skipped;
+		postCount = parsed.posts.length;
+	}
+	let articleCount = 0;
+	for (const entry of articleEntries) {
+		const article = parseArticle(await readZipText(entry));
+		if (article) {
+			posts.push(article);
+			articleCount++;
+		} else {
+			skipped++;
+		}
+	}
+	posts.sort((a, b) => b.date.localeCompare(a.date));
+	return { posts, skipped, postCount, articleCount };
 }
 
 /** Server-side check of the JSON the upload page sends. Drops anything malformed. */
@@ -218,6 +327,9 @@ export function sanitizeImportedPosts(input: unknown): ImportedPost[] {
 		if (!text || !date) continue;
 		const url = str(o.url, IMPORT_LIMITS.maxUrlChars) ?? "";
 		const post: ImportedPost = { date, text, url: /^https:\/\//.test(url) ? url : "" };
+		if (o.kind === "article") post.kind = "article";
+		const title = str(o.title, 300)?.trim();
+		if (title) post.title = title;
 		const urn = str(o.urn, 100);
 		if (urn && /^urn:li:(share|ugcPost|activity):\d+$/.test(urn)) post.urn = urn;
 		const shared = str(o.sharedUrl, IMPORT_LIMITS.maxUrlChars);

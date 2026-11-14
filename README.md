@@ -27,7 +27,7 @@ postline-mcp is built on three rules:
 | Delete your own post | ✅ Verified | Same permission |
 | Edit your own post's text (in place, keeps likes and comments) | ✅ Verified | Same permission; `PARTIAL_UPDATE` on `/rest/posts` |
 | List your posts | ✅ Verified live | Posts made through postline, plus any imported history |
-| Import your post history and search it | ✅ Built | From LinkedIn's "Get a copy of your data" export, via a one-time upload link |
+| Import your post and article history and search it | ✅ Built | From LinkedIn's "Get a copy of your data" export (`Shares.csv` and `Articles/`), via a one-time upload link |
 | Read your feed, others' posts, comments, analytics | ❌ Not possible | `r_member_social` is closed by LinkedIn |
 | Post as a Company Page | ❌ Not in v1 | Requires LinkedIn partner approval |
 | Read your data via the DMA Portability API | ❌ EU/EEA/Swiss members only | LinkedIn restricts it by profile location |
@@ -125,7 +125,7 @@ sequenceDiagram
 | `edit_post` | Replaces a post's text in place (likes and comments kept) | Yes |
 | `delete_post` | Deletes one of your posts | Yes |
 | `list_my_posts` | Lists your posts: made through postline, plus imported history | No |
-| `search_my_posts` | Full text of past posts, filtered by words, so Claude can write in your voice | No |
+| `search_my_posts` | Full text of past posts and articles, filtered by words, so Claude can write in your voice | No |
 | `create_import_link` | One-time upload link (15 min) for your LinkedIn data export | No |
 | `delete_imported_history` | Removes imported history from postline | No |
 | `comment_on_post` | Comments on a post as you | Yes |
@@ -133,7 +133,7 @@ sequenceDiagram
 
 ### Writing in your voice
 
-LinkedIn's API won't return your past posts, but LinkedIn's data export will. Ask Claude to *"import my LinkedIn history"*; it gives you a one-time link. Upload the export ZIP there, and from then on Claude can call `search_my_posts` to read how you actually write before drafting something new, and to avoid repeating a post you've already made.
+LinkedIn's API won't return your past posts, but LinkedIn's data export will. Ask Claude to *"import my LinkedIn history"*; it gives you a one-time link. Upload the export ZIP there. Your feed posts (`Shares.csv`) and long-form articles (`Articles/`) are imported; empty drafts are skipped. From then on Claude can call `search_my_posts` to read how you actually write before drafting something new, and to avoid repeating a post you've already made.
 
 ```mermaid
 sequenceDiagram
@@ -145,7 +145,7 @@ sequenceDiagram
     C->>W: create_import_link
     W-->>C: One-time link (15 min)
     You->>B: Open link, drop the export ZIP
-    B->>B: Unzip + parse Shares.csv locally
+    B->>B: Unzip + parse Shares.csv and Articles locally
     B->>W: POST parsed posts (JSON)
     W->>W: Check link, validate, save, burn link
     You->>C: "Draft a post about X in my style"
@@ -153,7 +153,7 @@ sequenceDiagram
     W-->>C: Your past posts on X
 ```
 
-The file is parsed in your browser, not on the server: a free-plan Worker gets about 10 ms of CPU per request, and parsing a large export takes longer. To get the export: LinkedIn → Settings & Privacy → Data privacy → **Get a copy of your data** → *Want something in particular?* → **Posts** → Request archive.
+The file is parsed in your browser, not on the server: a free-plan Worker gets about 10 ms of CPU per request, and parsing a large export takes longer. To get the export: LinkedIn → Settings & Privacy → Data privacy → **Get a copy of your data**. If **Posts** isn't offered on its own, choose **Download larger data archive** (up to 24 hours); **Articles** alone arrives within minutes.
 
 Text is escaped for LinkedIn's formatting rules, so brackets, asterisks and underscores publish exactly as written, and `#hashtags` become real hashtags.
 

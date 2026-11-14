@@ -1,6 +1,15 @@
+import { readFileSync } from "node:fs";
 import { strToU8, zipSync } from "fflate";
 import { describe, expect, it } from "vitest";
-import { extractSharesCsv, findZipEntry, parseCsv, parseShares, sanitizeImportedPosts } from "../src/importer";
+import {
+	collectExportPosts,
+	extractSharesCsv,
+	findZipEntry,
+	parseArticle,
+	parseCsv,
+	parseShares,
+	sanitizeImportedPosts,
+} from "../src/importer";
 
 const HEADER = "Date,ShareLink,ShareCommentary,SharedUrl,MediaUrl,Visibility";
 
@@ -104,5 +113,58 @@ describe("sanitizeImportedPosts", () => {
 	it("rejects non-lists and oversized uploads", () => {
 		expect(() => sanitizeImportedPosts({})).toThrow(/list/);
 		expect(() => sanitizeImportedPosts(new Array(10_001).fill({}))).toThrow(/Too many/);
+	});
+});
+
+describe("LinkedIn articles (real export markup)", () => {
+	const published = readFileSync(new URL("./fixtures/article-published.html", import.meta.url), "utf8");
+	const draft = readFileSync(new URL("./fixtures/article-draft.html", import.meta.url), "utf8");
+
+	it("parses title, link, published date and clean text", () => {
+		const a = parseArticle(published)!;
+		expect(a).toMatchObject({
+			kind: "article",
+			title: "🎯 Sample: AI Projects & Why They Fail — It’s a Project",
+			url: "https://www.linkedin.com/pulse/sample-article-about-ai-projects-example-abcde",
+			date: "2025-05-15T19:13:00.000Z",
+		});
+		expect(a.visibility).toBeUndefined();
+		expect(a.text).toContain('First paragraph with bold and a "quote" & an ampersand.');
+		expect(a.text).toContain("🧠 A heading\n\n📦 1. “The Devil Is in the Data”");
+		expect(a.text).toContain("- Step one: do this.\n- Step two.");
+		expect(a.text).toContain("Line one\nline two <tag> 'apos' — dash");
+		expect(a.text).toContain("---");
+		expect(a.text).not.toMatch(/<\/?(p|div|h[1-6]|strong|em|li|ol|a|img|br|hr)\b|&amp;|margin:/);
+		expect(a.text.startsWith("By the author")).toBe(true);
+	});
+
+	it("skips empty unpublished drafts", () => {
+		expect(parseArticle(draft)).toBeNull();
+	});
+
+	it("collects posts and articles from one archive, newest first", async () => {
+		const shares = `${HEADER}\n2026-01-01 08:00:00,,"A feed post",,,MEMBER_NETWORK\n`;
+		const zip = zipSync({
+			"Shares.csv": strToU8(shares),
+			"Articles/Articles/sample-article.html": strToU8(published),
+			"Articles/Articles/2022-02-22 23:31:19.0-Sample draft title.html": strToU8(draft),
+			"Profile.csv": strToU8("a,b\n1,2\n"),
+		});
+		const out = await collectExportPosts(zip, "Basic_LinkedInDataExport.zip");
+		expect(out).toMatchObject({ postCount: 1, articleCount: 1, skipped: 1 });
+		expect(out.posts.map((p) => p.kind ?? "post")).toEqual(["post", "article"]);
+	});
+
+	it("works with an articles-only archive and explains an archive with neither", async () => {
+		const articlesOnly = zipSync({ "Articles/Articles/a.html": strToU8(published), "Profile.csv": strToU8("x\n") });
+		expect((await collectExportPosts(articlesOnly, "a.zip")).articleCount).toBe(1);
+		const neither = zipSync({ "Profile.csv": strToU8("x\n") });
+		await expect(collectExportPosts(neither, "a.zip")).rejects.toThrow(/Download larger data archive/);
+	});
+
+	it("keeps article kind and title through server validation", () => {
+		const [a] = sanitizeImportedPosts([{ kind: "article", title: "T", date: "2025-01-01T00:00:00Z", text: "x".repeat(20_000), url: "https://www.linkedin.com/pulse/x" }]);
+		expect(a).toMatchObject({ kind: "article", title: "T" });
+		expect(a.text).toHaveLength(20_000);
 	});
 });

@@ -34,7 +34,7 @@ Your LinkedIn token never goes to Claude. Claude only holds a key to your Worker
 | `src/tools.ts` | What each tool does, plus input rules (schemas) | The job descriptions |
 | `src/linkedin.ts` | Every call to LinkedIn's API, text escaping, link parsing, error messages | The phone line to LinkedIn |
 | `src/store.ts` | Reading and writing drafts, post records, imported history and import links in KV | The filing cabinet |
-| `src/importer.ts` | Reads LinkedIn's data export: ZIP, CSV, Shares.csv → posts; validates uploads | The archivist |
+| `src/importer.ts` | Reads LinkedIn's data export: ZIP, `Shares.csv` → posts, `Articles/*.html` → articles; validates uploads | The archivist |
 | `src/import-page.ts` | The one-time upload page; runs the importer in your browser | The drop box |
 | `src/env.d.ts`, `worker-configuration.d.ts` | TypeScript types for settings and the Workers runtime (the second is generated) | Labels for the drawers |
 | `test/` | 35 unit tests with a fake LinkedIn and fake KV | The rehearsal |
@@ -174,7 +174,7 @@ The OAuth library also keeps its own keys in the same bucket: client registratio
 
 1. `create_import_link` stores `import:<random token>` → your member ID for 15 minutes and returns `https://<worker>/import/<token>`.
 2. `GET /import/:token` serves the upload page with a strict Content-Security-Policy and no-referrer, so the token can't leak.
-3. **In your browser**, the page unzips the export using the browser's built-in `DecompressionStream`, finds `Shares.csv`, and parses it. This happens client-side because a free-plan Worker gets about 10 ms of CPU per request; parsing 600 posts took about 50 ms with a simple parser. The page runs the *same* functions as the tests: `import-page.ts` serialises them with `toString()`.
+3. **In your browser**, the page unzips the export using the browser's built-in `DecompressionStream`, then parses `Shares.csv` (feed posts) and every `Articles/*.html` (articles: title from `<h1>`, link to `/pulse/…`, date from *Published on*, or *Created on* for drafts, and body converted to plain text; empty drafts are skipped). This happens client-side because a free-plan Worker gets about 10 ms of CPU per request; parsing 600 posts took about 50 ms with a simple parser. The page runs the *same* functions as the tests: `import-page.ts` serialises them with `toString()`.
 4. `POST /import/:token` (same origin only) receives JSON. `sanitizeImportedPosts` drops malformed rows and non-https links and caps sizes. The posts are saved as one value, and the token is deleted.
 
 `search_my_posts` returns full post text (capped at about 24k characters per call) so Claude can match your voice; `list_my_posts` merges history with posts made through postline.
