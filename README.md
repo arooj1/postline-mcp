@@ -99,6 +99,8 @@ npm run dev                 # http://localhost:8788 (add http://localhost:8788/c
 npm run check               # type-check + unit tests
 ```
 
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the code fits together and how to debug it.
+
 `spike/linkedin-spike.mjs` is the standalone script used to verify the API (see [Phase 0 results](docs/phase-0-results.md)).
 
 ## Roadmap
