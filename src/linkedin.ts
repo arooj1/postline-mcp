@@ -117,6 +117,15 @@ export class LinkedInClient {
 		this.fetchImpl = fetchImpl ?? ((...args) => fetch(...args));
 	}
 
+	/** Headers for the unversioned /v2 API (no LinkedIn-Version header). */
+	private v2Headers(): Record<string, string> {
+		return {
+			Authorization: `Bearer ${this.accessToken}`,
+			"X-Restli-Protocol-Version": "2.0.0",
+			"Content-Type": "application/json",
+		};
+	}
+
 	private headers(extra: Record<string, string> = {}): Record<string, string> {
 		return {
 			Authorization: `Bearer ${this.accessToken}`,
@@ -226,13 +235,17 @@ export class LinkedInClient {
 		return value.image;
 	}
 
-	/** Comments on a post as the member. Returns the comment URN when LinkedIn provides one. */
+	/**
+	 * Comments on a post as the member. Returns the comment URN when LinkedIn provides one.
+	 * Uses the unversioned /v2 endpoint: on the versioned /rest endpoint LinkedIn treats
+	 * comments as a partner API (Community Management) and refuses self-serve apps.
+	 */
 	async comment(postUrn: string, actorUrn: string, text: string): Promise<string | undefined> {
 		const res = await this.request(
-			`/rest/socialActions/${encodeURIComponent(postUrn)}/comments`,
+			`/v2/socialActions/${encodeURIComponent(postUrn)}/comments`,
 			{
 				method: "POST",
-				headers: this.headers(),
+				headers: this.v2Headers(),
 				body: JSON.stringify({ actor: actorUrn, object: postUrn, message: { text } }),
 			},
 			"comment on the post",
@@ -240,12 +253,13 @@ export class LinkedInClient {
 		return res.headers.get("x-restli-id") ?? undefined;
 	}
 
+	/** Reacts as the member. Uses /v2 for the same reason as comment(). */
 	async react(postUrn: string, actorUrn: string, reaction: ReactionLabel): Promise<void> {
 		await this.request(
-			`/rest/reactions?actor=${encodeURIComponent(actorUrn)}`,
+			`/v2/reactions?actor=${encodeURIComponent(actorUrn)}`,
 			{
 				method: "POST",
-				headers: this.headers(),
+				headers: this.v2Headers(),
 				body: JSON.stringify({ root: postUrn, reactionType: REACTIONS[reaction] }),
 			},
 			"react to the post",

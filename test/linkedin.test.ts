@@ -137,13 +137,15 @@ describe("LinkedInClient", () => {
 		const client = new LinkedInClient("tok", "202609", m.fetch);
 		await client.comment("urn:li:share:9", "urn:li:person:abc", "Great post");
 		await client.react("urn:li:share:9", "urn:li:person:abc", "insightful");
-		expect(m.calls[0].url).toBe("https://api.linkedin.com/rest/socialActions/urn%3Ali%3Ashare%3A9/comments");
+		expect(m.calls[0].url).toBe("https://api.linkedin.com/v2/socialActions/urn%3Ali%3Ashare%3A9/comments");
+		expect(m.calls[0].headers["linkedin-version"]).toBeUndefined();
 		expect(JSON.parse(m.calls[0].body!)).toEqual({
 			actor: "urn:li:person:abc",
 			object: "urn:li:share:9",
 			message: { text: "Great post" },
 		});
-		expect(m.calls[1].url).toBe("https://api.linkedin.com/rest/reactions?actor=urn%3Ali%3Aperson%3Aabc");
+		expect(m.calls[1].url).toBe("https://api.linkedin.com/v2/reactions?actor=urn%3Ali%3Aperson%3Aabc");
+		expect(m.calls[1].headers["linkedin-version"]).toBeUndefined();
 		expect(JSON.parse(m.calls[1].body!)).toEqual({ root: "urn:li:share:9", reactionType: "INTEREST" });
 	});
 
