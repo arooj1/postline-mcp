@@ -28,3 +28,17 @@ Deployed via GitHub Actions to Cloudflare Workers and added to Claude as a custo
 | `delete_post` | PASS: removed from LinkedIn and from the post record |
 
 Not yet verified live: link cards, image posts, `comment_on_post`, `react_to_post`.
+
+## Second live session — November 14, 2026
+
+| Tool | Result |
+|---|---|
+| `publish_post` with link card | PASS: card shows title and description |
+| `publish_post` with image | PASS after the repo was made public (raw.githubusercontent.com returns 404 for private repos): download → LinkedIn upload → post |
+| `comment_on_post` | FAIL on `/rest/socialActions/{urn}/comments` (403 `partnerApiSocialActions.CREATE`); **PASS on `/v2/socialActions/{urn}/comments`** |
+| `react_to_post` ("insightful" → `INTEREST`) | FAIL on `/rest/reactions` (403 `partnerApiReactions.CREATE`); **PASS on `/v2/reactions`** |
+| `delete_post` ×2 | PASS: comment and reaction removed with the post |
+
+Finding: for self-serve apps, LinkedIn treats the versioned `/rest` comment and reaction endpoints as Community Management (partner) APIs. The unversioned `/v2` endpoints accept the same `w_member_social` permission. Posts, edits, deletes and images work on `/rest`.
+
+All 8 tools are now verified live.

@@ -146,8 +146,8 @@ Why **draft → publish** is two tools: Claude can't publish in one step. It has
   | `updatePostText` | `POST /rest/posts/{id}` with `X-RestLi-Method: PARTIAL_UPDATE` |
   | `deletePost` | `DELETE /rest/posts/{id}` |
   | `uploadImage` | `POST /rest/images?action=initializeUpload`, then `PUT` the bytes |
-  | `comment` | `POST /rest/socialActions/{id}/comments` |
-  | `react` | `POST /rest/reactions?actor=…` |
+  | `comment` | `POST /v2/socialActions/{id}/comments` (no version header; `/rest` is partner-only for this) |
+  | `react` | `POST /v2/reactions?actor=…` (same reason) |
 
 - **`toLittleText()`** (line 67): LinkedIn treats `( ) [ ] * _ ~ @ # < > { } |` as formatting. Unescaped, posts get cut off or rejected. This function escapes them, and turns `#word` into a real hashtag.
 - **`parsePostRef()`** (line 87): accepts a post link in any common format, or an ID, and returns the ID.
