@@ -4,9 +4,43 @@
  *
  *   post:<memberId>:<postUrn>   -> PostRecord  (posts made or edited through postline)
  *   draft:<memberId>:<draftId>  -> Draft       (expires after 24 hours)
+ *   history:<memberId>          -> PostHistory (imported from LinkedIn's data export; one value,
+ *                                               so an import costs one KV write on the free plan)
+ *   import:<token>              -> ImportTicket (one-time upload link, expires after 15 minutes)
  */
 
+import type { ImportedPost } from "./importer";
 import type { ArticleInput, Visibility } from "./linkedin";
+
+export const IMPORT_TTL_SECONDS = 15 * 60;
+
+export interface PostHistory {
+	importedAt: string;
+	posts: ImportedPost[];
+}
+
+export interface ImportTicket {
+	memberId: string;
+	createdAt: string;
+}
+
+/** Creates a one-time upload link token for a member. */
+export async function createImportTicket(kv: KVNamespace, memberId: string): Promise<string> {
+	const bytes = crypto.getRandomValues(new Uint8Array(24));
+	const token = btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+	const ticket: ImportTicket = { memberId, createdAt: new Date().toISOString() };
+	await kv.put(`import:${token}`, JSON.stringify(ticket), { expirationTtl: IMPORT_TTL_SECONDS });
+	return token;
+}
+
+export async function readImportTicket(kv: KVNamespace, token: string): Promise<ImportTicket | null> {
+	if (!/^[A-Za-z0-9_-]{20,64}$/.test(token)) return null;
+	return kv.get<ImportTicket>(`import:${token}`, "json");
+}
+
+export async function consumeImportTicket(kv: KVNamespace, token: string): Promise<void> {
+	await kv.delete(`import:${token}`);
+}
 
 export const DRAFT_TTL_SECONDS = 24 * 60 * 60;
 
@@ -73,6 +107,19 @@ export class Store {
 
 	async deletePost(urn: string): Promise<void> {
 		await this.kv.delete(postKey(this.memberId, urn));
+	}
+
+	async saveHistory(posts: ImportedPost[]): Promise<void> {
+		const history: PostHistory = { importedAt: new Date().toISOString(), posts };
+		await this.kv.put(`history:${this.memberId}`, JSON.stringify(history));
+	}
+
+	async getHistory(): Promise<PostHistory | null> {
+		return this.kv.get<PostHistory>(`history:${this.memberId}`, "json");
+	}
+
+	async deleteHistory(): Promise<void> {
+		await this.kv.delete(`history:${this.memberId}`);
 	}
 
 	/** Newest first. */

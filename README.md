@@ -4,7 +4,7 @@
 
 An open-source MCP connector that lets Claude draft, publish, edit and delete posts on **your own** LinkedIn profile — using only LinkedIn's official API.
 
-> **Status:** v0.1 — deployed and working as a Claude custom connector. **All 8 tools verified live through Claude on Nov 14, 2026** (see [test results](docs/phase-0-results.md)).
+> **Status:** v1.0 candidate — deployed and working as a Claude custom connector. The 8 posting tools are verified live through Claude (Nov 14, 2026, see [test results](docs/phase-0-results.md)); history import and search are tested end to end locally and awaiting a live import.
 >
 > Not affiliated with, endorsed by, or sponsored by LinkedIn Corporation. LinkedIn is a trademark of LinkedIn Corporation.
 
@@ -26,8 +26,8 @@ postline-mcp is built on three rules:
 | Comment on / react to a post (by link) | ✅ Verified live | Same permission, via LinkedIn's `/v2` endpoints (the newer `/rest` ones are partner-only for these) |
 | Delete your own post | ✅ Verified | Same permission |
 | Edit your own post's text (in place, keeps likes and comments) | ✅ Verified | Same permission; `PARTIAL_UPDATE` on `/rest/posts` |
-| List posts you made **through this tool** | ✅ Built | Kept in the connector's own per-user record |
-| Import your post history | ✅ Planned | From LinkedIn's "Download your data" export |
+| List your posts | ✅ Verified live | Posts made through postline, plus any imported history |
+| Import your post history and search it | ✅ Built | From LinkedIn's "Get a copy of your data" export, via a one-time upload link |
 | Read your feed, others' posts, comments, analytics | ❌ Not possible | `r_member_social` is closed by LinkedIn |
 | Post as a Company Page | ❌ Not in v1 | Requires LinkedIn partner approval |
 | Read your data via the DMA Portability API | ❌ EU/EEA/Swiss members only | LinkedIn restricts it by profile location |
@@ -124,9 +124,36 @@ sequenceDiagram
 | `publish_post` | Publishes a draft, only after you approve the preview | Yes |
 | `edit_post` | Replaces a post's text in place (likes and comments kept) | Yes |
 | `delete_post` | Deletes one of your posts | Yes |
-| `list_my_posts` | Lists posts published or edited through postline | No |
+| `list_my_posts` | Lists your posts: made through postline, plus imported history | No |
+| `search_my_posts` | Full text of past posts, filtered by words, so Claude can write in your voice | No |
+| `create_import_link` | One-time upload link (15 min) for your LinkedIn data export | No |
+| `delete_imported_history` | Removes imported history from postline | No |
 | `comment_on_post` | Comments on a post as you | Yes |
 | `react_to_post` | Like, celebrate, support, love, insightful or funny | Yes |
+
+### Writing in your voice
+
+LinkedIn's API won't return your past posts, but LinkedIn's data export will. Ask Claude to *"import my LinkedIn history"*; it gives you a one-time link. Upload the export ZIP there, and from then on Claude can call `search_my_posts` to read how you actually write before drafting something new, and to avoid repeating a post you've already made.
+
+```mermaid
+sequenceDiagram
+    actor You
+    participant C as Claude
+    participant W as Your Worker
+    participant B as Your browser
+    You->>C: "Import my LinkedIn history"
+    C->>W: create_import_link
+    W-->>C: One-time link (15 min)
+    You->>B: Open link, drop the export ZIP
+    B->>B: Unzip + parse Shares.csv locally
+    B->>W: POST parsed posts (JSON)
+    W->>W: Check link, validate, save, burn link
+    You->>C: "Draft a post about X in my style"
+    C->>W: search_my_posts("X")
+    W-->>C: Your past posts on X
+```
+
+The file is parsed in your browser, not on the server: a free-plan Worker gets about 10 ms of CPU per request, and parsing a large export takes longer. To get the export: LinkedIn → Settings & Privacy → Data privacy → **Get a copy of your data** → *Want something in particular?* → **Posts** → Request archive.
 
 Text is escaped for LinkedIn's formatting rules, so brackets, asterisks and underscores publish exactly as written, and `#hashtags` become real hashtags.
 
@@ -211,8 +238,11 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the code fits together 
 - [x] **Live deployment** — Connected in Claude; text publish, edit, delete and listing verified live (Nov 14, 2026)
 - [x] **Remaining live checks** — link card, image, comment and reaction verified (Nov 14, 2026)
 - [x] **CI/CD** — GitHub Actions: checks on every push, automatic deploy from `main`
-- [ ] **Phase 3** — Import history from LinkedIn's data export, v1.0 release
+- [x] **Phase 3** — Import history from LinkedIn's data export, `search_my_posts` for writing in your voice
+- [ ] **v1.0 release** — after a live import of a real export
 
 ## License
+
+Contributions welcome: see [CONTRIBUTING.md](CONTRIBUTING.md) and the [changelog](CHANGELOG.md).
 
 [MIT](LICENSE) © 2026 Arooj Qureshi

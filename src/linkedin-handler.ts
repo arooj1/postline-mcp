@@ -9,7 +9,10 @@
 
 import type { AuthRequest, OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import { Hono } from "hono";
+import { IMPORT_LIMITS, sanitizeImportedPosts } from "./importer";
+import { IMPORT_PAGE_HEADERS, renderImportExpired, renderImportPage } from "./import-page";
 import { LinkedInClient } from "./linkedin";
+import { consumeImportTicket, readImportTicket, Store } from "./store";
 import type { Props } from "./tools";
 import {
 	addApprovedClient,
@@ -159,6 +162,44 @@ app.get("/callback", async (c) => {
 	const headers = new Headers({ Location: redirectTo });
 	if (clearSessionCookie) headers.set("Set-Cookie", clearSessionCookie);
 	return new Response(null, { status: 302, headers });
+});
+
+// ---------- One-time history import (link created by the create_import_link tool) ----------
+
+app.get("/import/:token", async (c) => {
+	const ticket = await readImportTicket(c.env.OAUTH_KV, c.req.param("token"));
+	const html = ticket ? renderImportPage() : renderImportExpired();
+	return new Response(html, { status: ticket ? 200 : 410, headers: IMPORT_PAGE_HEADERS });
+});
+
+app.post("/import/:token", async (c) => {
+	const token = c.req.param("token");
+	const ticket = await readImportTicket(c.env.OAUTH_KV, token);
+	if (!ticket) return c.json({ error: "This import link has expired or was already used. Ask Claude for a new one." }, 410);
+
+	// Same-origin only: the page posts to itself.
+	const origin = c.req.header("Origin");
+	if (origin && origin !== new URL(c.req.url).origin) return c.json({ error: "Cross-site upload refused." }, 403);
+	if (!(c.req.header("Content-Type") ?? "").startsWith("application/json")) return c.json({ error: "Expected JSON." }, 415);
+	const length = Number(c.req.header("Content-Length") ?? 0);
+	if (length > IMPORT_LIMITS.maxBodyBytes) return c.json({ error: "That history is too large to import." }, 413);
+
+	let posts;
+	try {
+		const body = (await c.req.json()) as { posts?: unknown };
+		posts = sanitizeImportedPosts(body.posts);
+	} catch (err) {
+		return c.json({ error: err instanceof Error ? err.message : "Invalid upload." }, 400);
+	}
+	if (posts.length === 0) return c.json({ error: "No valid posts in the upload." }, 400);
+
+	await new Store(c.env.OAUTH_KV, ticket.memberId).saveHistory(posts);
+	await consumeImportTicket(c.env.OAUTH_KV, token);
+	return c.json({
+		imported: posts.length,
+		from: posts[posts.length - 1].date.slice(0, 10),
+		to: posts[0].date.slice(0, 10),
+	});
 });
 
 function redirectToLinkedIn(request: Request, env: Env, stateToken: string, headers: Record<string, string> = {}) {

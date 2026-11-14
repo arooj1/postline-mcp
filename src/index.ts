@@ -7,6 +7,8 @@ import { LinkedInHandler } from "./linkedin-handler";
 import { Store } from "./store";
 import {
 	commentOnPost,
+	createImportLink,
+	deleteImportedHistory,
 	deletePost,
 	draftPost,
 	editPost,
@@ -15,11 +17,12 @@ import {
 	publishPost,
 	reactToPost,
 	schemas,
+	searchMyPosts,
 	type Props,
 	type ToolContext,
 } from "./tools";
 
-const VERSION = "0.1.0";
+const VERSION = "1.0.0";
 
 type TextResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
 
@@ -42,6 +45,8 @@ function createServer() {
 		props,
 		store: new Store(env.OAUTH_KV, props.memberId),
 		linkedin: new LinkedInClient(props.accessToken, env.LINKEDIN_VERSION || undefined),
+		kv: env.OAUTH_KV,
+		origin: new URL(env.MCP_RESOURCE).origin,
 	};
 
 	server.registerTool(
@@ -113,6 +118,42 @@ function createServer() {
 			annotations: { readOnlyHint: true, openWorldHint: false },
 		},
 		async (input) => run(() => listMyPosts(ctx, input)),
+	);
+
+	server.registerTool(
+		"search_my_posts",
+		{
+			title: "Search my LinkedIn posts",
+			description:
+				"Returns the full text of the user's past LinkedIn posts (imported history plus posts made through postline), optionally filtered by words. Use it to write new posts in the user's own voice and to avoid repeating topics they've already covered.",
+			inputSchema: schemas.search_my_posts,
+			annotations: { readOnlyHint: true, openWorldHint: false },
+		},
+		async (input) => run(() => searchMyPosts(ctx, input)),
+	);
+
+	server.registerTool(
+		"create_import_link",
+		{
+			title: "Import LinkedIn post history",
+			description:
+				"Creates a one-time upload link (valid 15 minutes) where the user uploads the ZIP from LinkedIn's 'Get a copy of your data' export, so their past posts become searchable. Give the link to the user; they open it in a browser.",
+			inputSchema: schemas.create_import_link,
+			annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+		},
+		async () => run(() => createImportLink(ctx)),
+	);
+
+	server.registerTool(
+		"delete_imported_history",
+		{
+			title: "Delete imported post history",
+			description:
+				"Deletes the imported LinkedIn post history stored in postline. Does not touch anything on LinkedIn. Confirm with the user first.",
+			inputSchema: schemas.delete_imported_history,
+			annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+		},
+		async () => run(() => deleteImportedHistory(ctx)),
 	);
 
 	server.registerTool(

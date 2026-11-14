@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { LinkedInClient } from "../src/linkedin";
 import { exchangeCode, parseAllowlist } from "../src/linkedin-handler";
-import { Store } from "../src/store";
+import { readImportTicket, Store } from "../src/store";
 import {
+	createImportLink,
+	deleteImportedHistory,
 	deletePost,
 	downloadImage,
 	draftPost,
@@ -10,6 +12,7 @@ import {
 	listMyPosts,
 	publishPost,
 	schemas,
+	searchMyPosts,
 	type ToolContext,
 } from "../src/tools";
 import { memoryKV, mockFetch } from "./helpers";
@@ -177,5 +180,58 @@ describe("sign-in helpers", () => {
 	it("returns null when LinkedIn refuses the code", async () => {
 		const m = mockFetch([() => new Response("bad", { status: 400 })]);
 		expect(await exchangeCode("c", "r", { LINKEDIN_CLIENT_ID: "i", LINKEDIN_CLIENT_SECRET: "s" }, m.fetch)).toBeNull();
+	});
+});
+
+describe("history: import link, search and list", () => {
+	const history = [
+		{ date: "2025-06-01T10:00:00.000Z", text: "Evaluation matters more than model choice in regulated AI.", url: "https://www.linkedin.com/feed/update/urn:li:share:11/", urn: "urn:li:share:11" },
+		{ date: "2024-02-01T10:00:00.000Z", text: "Teaching AI to 10,000 educators taught me patience.", url: "https://www.linkedin.com/feed/update/urn:li:activity:22/", urn: "urn:li:activity:22" },
+	];
+
+	it("create_import_link stores a one-time ticket for this member", async () => {
+		const { ctx, kv } = setup();
+		ctx.kv = kv;
+		ctx.origin = "https://postline.example.workers.dev";
+		const out = await createImportLink(ctx);
+		const token = out.match(/\/import\/([A-Za-z0-9_-]+)/)![1];
+		expect(out).toContain("https://postline.example.workers.dev/import/");
+		expect(await readImportTicket(kv, token)).toMatchObject({ memberId: "abc" });
+		expect(await readImportTicket(kv, "../bad")).toBeNull();
+	});
+
+	it("search_my_posts finds imported and postline posts by words, newest first", async () => {
+		const { ctx } = setup();
+		await ctx.store.saveHistory(history);
+		await ctx.store.savePost({ urn: "urn:li:share:99", url: "https://www.linkedin.com/feed/update/urn:li:share:99/", text: "AI evaluation checklist, part 2", visibility: "PUBLIC", kind: "text", createdAt: "2026-11-01T00:00:00.000Z" });
+		const all = await searchMyPosts(ctx, { limit: 10 });
+		expect(all).toMatch(/^3 matching post\(s\) out of 3/);
+		expect(all.indexOf("checklist")).toBeLessThan(all.indexOf("Evaluation matters"));
+		const hits = await searchMyPosts(ctx, { query: "evaluation AI", limit: 10 });
+		expect(hits).toMatch(/^2 matching/);
+		expect(hits).not.toContain("educators");
+		expect(await searchMyPosts(ctx, { query: "blockchain", limit: 10 })).toMatch(/No posts contain/);
+	});
+
+	it("list_my_posts merges sources and labels imported posts", async () => {
+		const { ctx } = setup();
+		await ctx.store.saveHistory(history);
+		const out = await listMyPosts(ctx, { limit: 20 });
+		expect(out).toMatch(/Showing 2 of 2/);
+		expect(out).toContain("(imported)");
+		expect(out).toContain("History imported");
+	});
+
+	it("search explains how to import when there is nothing", async () => {
+		const { ctx } = setup();
+		expect(await searchMyPosts(ctx, { limit: 10 })).toMatch(/create_import_link/);
+	});
+
+	it("delete_imported_history removes only the history", async () => {
+		const { ctx } = setup();
+		await ctx.store.saveHistory(history);
+		expect(await deleteImportedHistory(ctx)).toMatch(/Deleted 2 imported posts/);
+		expect(await ctx.store.getHistory()).toBeNull();
+		expect(await deleteImportedHistory(ctx)).toMatch(/no imported history/);
 	});
 });

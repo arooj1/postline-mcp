@@ -33,7 +33,9 @@ Your LinkedIn token never goes to Claude. Claude only holds a key to your Worker
 | `src/workers-oauth-utils.ts` | Security helpers from Cloudflare: CSRF tokens, cookies, state, consent HTML | The locks on the doors |
 | `src/tools.ts` | What each tool does, plus input rules (schemas) | The job descriptions |
 | `src/linkedin.ts` | Every call to LinkedIn's API, text escaping, link parsing, error messages | The phone line to LinkedIn |
-| `src/store.ts` | Reading and writing drafts and post records in KV | The filing cabinet |
+| `src/store.ts` | Reading and writing drafts, post records, imported history and import links in KV | The filing cabinet |
+| `src/importer.ts` | Reads LinkedIn's data export: ZIP, CSV, Shares.csv → posts; validates uploads | The archivist |
+| `src/import-page.ts` | The one-time upload page; runs the importer in your browser | The drop box |
 | `src/env.d.ts`, `worker-configuration.d.ts` | TypeScript types for settings and the Workers runtime (the second is generated) | Labels for the drawers |
 | `test/` | 35 unit tests with a fake LinkedIn and fake KV | The rehearsal |
 | `spike/linkedin-spike.mjs` | Standalone Phase 0 script that proved the API works | The original experiment |
@@ -160,14 +162,28 @@ Every KV key starts with your LinkedIn member ID, so data for different people c
 ```
 draft:<memberId>:<draftId>   → the draft (auto-deleted after 24 hours)
 post:<memberId>:<postUrn>    → record of a post made or edited through postline
+history:<memberId>           → imported post history (one value, so an import is one KV write)
+import:<token>               → one-time upload link → member ID (auto-deleted after 15 minutes)
 ```
 
+Why history is one value: Cloudflare's free plan allows a limited number of KV writes per day, and writing hundreds of old posts one by one could exhaust it in a single import.
+
 The OAuth library also keeps its own keys in the same bucket: client registrations, grants and tokens, with props stored encrypted.
+
+## 6b. History import (`src/importer.ts`, `src/import-page.ts`)
+
+1. `create_import_link` stores `import:<random token>` → your member ID for 15 minutes and returns `https://<worker>/import/<token>`.
+2. `GET /import/:token` serves the upload page with a strict Content-Security-Policy and no-referrer, so the token can't leak.
+3. **In your browser**, the page unzips the export using the browser's built-in `DecompressionStream`, finds `Shares.csv`, and parses it. This happens client-side because a free-plan Worker gets about 10 ms of CPU per request; parsing 600 posts took about 50 ms with a simple parser. The page runs the *same* functions as the tests: `import-page.ts` serialises them with `toString()`.
+4. `POST /import/:token` (same origin only) receives JSON. `sanitizeImportedPosts` drops malformed rows and non-https links and caps sizes. The posts are saved as one value, and the token is deleted.
+
+`search_my_posts` returns full post text (capped at about 24k characters per call) so Claude can match your voice; `list_my_posts` merges history with posts made through postline.
 
 ## 7. Tests (`test/`)
 
 - `helpers.ts` provides a fake KV (`memoryKV`) and a fake `fetch` (`mockFetch`) that records every call.
 - `linkedin.test.ts` checks that each API call has the right URL, headers and body, plus escaping, link parsing and error messages.
+- `importer.test.ts` covers CSV edge cases (quotes, commas and line breaks inside posts), real deflated and stored ZIPs, and upload validation.
 - `tools.test.ts` covers the draft → publish flow, image upload, expiry, edit and delete rules, listing, and the token exchange.
 
 Run `npm run check` (type-check plus tests) after any change.

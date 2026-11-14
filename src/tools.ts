@@ -14,7 +14,7 @@ import {
 	postUrl,
 	type ReactionLabel,
 } from "./linkedin";
-import { Store, type PostRecord } from "./store";
+import { createImportTicket, Store, type PostRecord } from "./store";
 
 /** What the OAuth flow stores for each signed-in member (encrypted by the OAuth provider). */
 export interface Props {
@@ -29,6 +29,10 @@ export interface ToolContext {
 	props: Props;
 	store: Store;
 	linkedin: LinkedInClient;
+	/** KV namespace, for one-time import links. */
+	kv?: KVNamespace;
+	/** Public origin of this Worker, e.g. https://postline-mcp.example.workers.dev */
+	origin?: string;
 	fetchImpl?: typeof fetch;
 	now?: () => Date;
 }
@@ -96,6 +100,18 @@ export const schemas = {
 	comment_on_post: z.object({
 		post: z.string().min(1).describe("Link to the post, or its urn:li:… ID."),
 		text: z.string().min(1).max(MAX_COMMENT_LENGTH).describe(`The comment text, up to ${MAX_COMMENT_LENGTH} characters.`),
+	}),
+	create_import_link: z.object({}),
+	search_my_posts: z.object({
+		query: z
+			.string()
+			.max(200)
+			.optional()
+			.describe("Words to look for in post text (all must appear). Leave empty for the most recent posts."),
+		limit: z.number().int().min(1).max(30).default(10).describe("How many posts to return, newest first."),
+	}),
+	delete_imported_history: z.object({
+		confirm: z.literal(true).describe("Must be true. Deletes the imported history from postline (not from LinkedIn)."),
 	}),
 	react_to_post: z.object({
 		post: z.string().min(1).describe("Link to the post, or its urn:li:… ID."),
@@ -210,14 +226,89 @@ export async function deletePost(ctx: ToolContext, input: In<"delete_post">): Pr
 }
 
 export async function listMyPosts(ctx: ToolContext, input: In<"list_my_posts">): Promise<string> {
-	const posts = await ctx.store.listPosts(input.limit);
-	if (posts.length === 0) {
-		return "No posts recorded yet. postline only knows about posts published or edited through it; LinkedIn doesn't let self-serve apps read your post history.";
+	const [own, history] = await Promise.all([ctx.store.listPosts(100), ctx.store.getHistory()]);
+	type Item = { date: string; url: string; preview: string; source: "postline" | "imported" };
+	const seen = new Set<string>();
+	const items: Item[] = [];
+	for (const p of own) {
+		seen.add(p.urn);
+		items.push({ date: p.createdAt, url: postUrl(p.urn), preview: p.preview, source: "postline" });
 	}
-	const lines = posts.map(
-		(p, i) => `${i + 1}. ${p.createdAt.slice(0, 10)} — ${postUrl(p.urn)}\n   ${p.preview.replace(/\s+/g, " ").slice(0, 140)}`,
+	for (const p of history?.posts ?? []) {
+		if (p.urn && seen.has(p.urn)) continue;
+		items.push({ date: p.date, url: p.url || (p.urn ? postUrl(p.urn) : ""), preview: p.text, source: "imported" });
+	}
+	if (items.length === 0) {
+		return "No posts yet. postline knows about posts published through it, plus any history you import with create_import_link. LinkedIn doesn't let self-serve apps read your post history directly.";
+	}
+	items.sort((a, b) => b.date.localeCompare(a.date));
+	const shown = items.slice(0, input.limit);
+	const lines = shown.map(
+		(p, i) =>
+			`${i + 1}. ${p.date.slice(0, 10)}${p.source === "imported" ? " (imported)" : ""} — ${p.url || "no link"}\n   ${p.preview.replace(/\s+/g, " ").slice(0, 140)}`,
 	);
-	return [`${posts.length} post(s) published through postline, newest first:`, ...lines].join("\n");
+	const historyNote = history ? ` History imported ${history.importedAt.slice(0, 10)} (${history.posts.length} posts).` : "";
+	return [`Showing ${shown.length} of ${items.length} post(s), newest first.${historyNote}`, ...lines].join("\n");
+}
+
+export async function createImportLink(ctx: ToolContext): Promise<string> {
+	if (!ctx.kv || !ctx.origin) throw new Error("Import links aren't available on this deployment.");
+	const token = await createImportTicket(ctx.kv, ctx.props.memberId);
+	return [
+		`Upload link (works once, expires in 15 minutes): ${ctx.origin}/import/${token}`,
+		"",
+		"Give the user this link. They open it in their browser and upload the ZIP from LinkedIn's \"Get a copy of your data\" (with Posts selected), or the Shares.csv inside it.",
+		"Importing replaces any history imported before. After the upload, search_my_posts and list_my_posts include those posts.",
+	].join("\n");
+}
+
+/** Max characters of post text returned by one search, to keep responses a sensible size. */
+const SEARCH_TEXT_BUDGET = 24_000;
+
+export async function searchMyPosts(ctx: ToolContext, input: In<"search_my_posts">): Promise<string> {
+	const [history, own] = await Promise.all([ctx.store.getHistory(), ctx.store.listPosts(100)]);
+	const ownFull = await Promise.all(own.map((p) => ctx.store.getPost(p.urn)));
+	type Item = { date: string; url: string; text: string };
+	const seen = new Set<string>();
+	const all: Item[] = [];
+	for (const p of ownFull) {
+		if (!p) continue;
+		seen.add(p.urn);
+		all.push({ date: p.updatedAt ?? p.createdAt, url: p.url, text: p.text });
+	}
+	for (const p of history?.posts ?? []) {
+		if (p.urn && seen.has(p.urn)) continue;
+		all.push({ date: p.date, url: p.url || (p.urn ? postUrl(p.urn) : ""), text: p.text });
+	}
+	if (all.length === 0) {
+		return "No posts to search yet. Use create_import_link to import your LinkedIn post history.";
+	}
+	const words = (input.query ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+	const matches = all
+		.filter((p) => words.every((w) => p.text.toLowerCase().includes(w)))
+		.sort((a, b) => b.date.localeCompare(a.date));
+	if (matches.length === 0) return `No posts contain: ${words.join(" ")}. Searched ${all.length} posts.`;
+
+	const out: string[] = [];
+	let budget = SEARCH_TEXT_BUDGET;
+	for (const p of matches.slice(0, input.limit)) {
+		const text = p.text.length > budget ? `${p.text.slice(0, Math.max(0, budget))}… [truncated]` : p.text;
+		out.push(`--- ${p.date.slice(0, 10)} ${p.url}\n${text}`);
+		budget -= text.length;
+		if (budget <= 0) break;
+	}
+	return [
+		`${matches.length} matching post(s) out of ${all.length}; showing ${out.length}, newest first.`,
+		"Use these as examples of the user's own voice, topics and formatting. Don't copy them; avoid repeating posts they've already written.",
+		...out,
+	].join("\n\n");
+}
+
+export async function deleteImportedHistory(ctx: ToolContext): Promise<string> {
+	const history = await ctx.store.getHistory();
+	if (!history) return "There's no imported history to delete.";
+	await ctx.store.deleteHistory();
+	return `Deleted ${history.posts.length} imported posts from postline. Nothing on LinkedIn was changed.`;
 }
 
 export async function commentOnPost(ctx: ToolContext, input: In<"comment_on_post">): Promise<string> {
