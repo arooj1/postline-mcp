@@ -1,0 +1,87 @@
+# CI/CD for postline-mcp
+#
+# check  — every push and pull request: type-check, unit tests, and a dry-run build.
+# deploy — pushes to main (or a manual run), only after `check` passes, and only in a
+#          repository that has opted in by setting the MCP_RESOURCE repository variable.
+#          Forks never deploy unless their owner sets it up for their own Cloudflare account.
+#
+# Repository settings → Secrets and variables → Actions
+#   Variables: MCP_RESOURCE           e.g. https://postline-mcp.<your-subdomain>.workers.dev/mcp
+#   Secrets:   CLOUDFLARE_API_TOKEN   ("Edit Cloudflare Workers" template)
+#              CLOUDFLARE_ACCOUNT_ID
+#              LINKEDIN_CLIENT_ID
+#              LINKEDIN_CLIENT_SECRET
+#              COOKIE_ENCRYPTION_KEY  (openssl rand -hex 32)
+#              ALLOWED_MEMBER_IDS     (optional at first; the sign-in page shows your ID)
+
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Type-check, test, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npm run type-check
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build (dry run, no Cloudflare login needed)
+        run: npx wrangler deploy --dry-run --outdir dist
+
+  deploy:
+    name: Deploy to Cloudflare
+    needs: check
+    if: >-
+      vars.MCP_RESOURCE != '' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    environment:
+      name: production
+      url: ${{ vars.MCP_RESOURCE }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Deploy Worker with secrets
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          MCP_RESOURCE: ${{ vars.MCP_RESOURCE }}
+          LINKEDIN_CLIENT_ID: ${{ secrets.LINKEDIN_CLIENT_ID }}
+          LINKEDIN_CLIENT_SECRET: ${{ secrets.LINKEDIN_CLIENT_SECRET }}
+          COOKIE_ENCRYPTION_KEY: ${{ secrets.COOKIE_ENCRYPTION_KEY }}
+          ALLOWED_MEMBER_IDS: ${{ secrets.ALLOWED_MEMBER_IDS }}
+        run: node scripts/deploy.mjs

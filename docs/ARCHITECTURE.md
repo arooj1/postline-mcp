@@ -37,6 +37,8 @@ Your LinkedIn token never goes to Claude. Claude only holds a key to your Worker
 | `src/env.d.ts`, `worker-configuration.d.ts` | TypeScript types for settings and the Workers runtime (the second is generated) | Labels for the drawers |
 | `test/` | 35 unit tests with a fake LinkedIn and fake KV | The rehearsal |
 | `spike/linkedin-spike.mjs` | Standalone Phase 0 script that proved the API works | The original experiment |
+| `.github/workflows/ci.yml` | GitHub Actions: checks on every push, deploy from `main` | The assembly line |
+| `scripts/deploy.mjs` | Deploys the Worker and uploads its secrets in one step | The shipping clerk |
 
 ## 1. `wrangler.jsonc`: the deployment recipe
 
@@ -170,6 +172,20 @@ The OAuth library also keeps its own keys in the same bucket: client registratio
 
 Run `npm run check` (type-check plus tests) after any change.
 
+## 8. CI/CD (`.github/workflows/ci.yml`, `scripts/deploy.mjs`)
+
+Two jobs:
+
+- **check** runs on every push and pull request: `npm ci`, type-check, unit tests, and `wrangler deploy --dry-run` to confirm the Worker builds. It needs no secrets, so it also runs on forks and contributors' pull requests.
+- **deploy** runs only after `check` passes, and only for a push to `main` or a manual run. It is skipped unless the repository variable `MCP_RESOURCE` is set, which is how a fork opts in. It runs `scripts/deploy.mjs`, which:
+  1. stops with a clear error if any required secret is missing, or if `MCP_RESOURCE` isn't an `https://…/mcp` URL;
+  2. warns if `ALLOWED_MEMBER_IDS` isn't set yet;
+  3. writes the secrets to a private temporary file, runs `wrangler deploy --secrets-file … --var MCP_RESOURCE:…`, and deletes the file. Secret values are never printed.
+
+The KV store is created on the first deploy and reused after that, because Wrangler looks up the existing binding on the deployed Worker.
+
+**Debug tip:** open the **Actions** tab on GitHub. A red ✗ on *Type-check, test, build* means the code is broken; a red ✗ on *Deploy to Cloudflare* usually means a missing or wrong secret, and the log names it.
+
 ## Debugging toolkit
 
 | Situation | Command |
@@ -185,9 +201,9 @@ Run `npm run check` (type-check plus tests) after any change.
 ## Order of setup, and where each failure lives
 
 ```
-0. Wrangler logged in to Cloudflare   ← not our code (wrangler login / API token)
-1. npx wrangler deploy                ← wrangler.jsonc
-2. secrets set                        ← wrangler.jsonc "secrets"
+0. GitHub secrets + MCP_RESOURCE set ← GitHub repo settings (or an API token locally)
+1. Deploy                             ← ci.yml → scripts/deploy.mjs → wrangler.jsonc
+2. Secrets uploaded with the deploy   ← scripts/deploy.mjs
 3. /callback added in LinkedIn app    ← LinkedIn portal
 4. Claude connects                    ← index.ts → linkedin-handler.ts
 5. Allowlist                          ← linkedin-handler.ts step 7
