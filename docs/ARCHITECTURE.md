@@ -80,7 +80,7 @@ Read it bottom-up.
    - **annotations** such as `destructiveHint`, which tell Claude the tool changes or deletes things
    - a **handler** that calls the function in `tools.ts`
 
-**`run()` (line 25)** turns any error into a readable tool error, so Claude can tell you what went wrong instead of the connection failing.
+**`run()` (line 27)** turns any error into a readable tool error, so Claude can tell you what went wrong instead of the connection failing.
 
 ## 3. `src/linkedin-handler.ts`: the sign-in pages
 
