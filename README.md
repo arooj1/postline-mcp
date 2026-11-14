@@ -4,7 +4,7 @@
 
 An open-source MCP connector that lets Claude draft, publish, edit and delete posts on **your own** LinkedIn profile — using only LinkedIn's official API.
 
-> **Status:** v0.1 — built and tested locally; first live deployment in progress. Publish, edit and delete are verified against LinkedIn's live API; comment and react are not yet.
+> **Status:** v0.1 — deployed and working as a Claude custom connector (verified Nov 14, 2026). Text publish, in-place edit, delete and post listing are verified live through Claude; link cards, images, comments and reactions are built but not yet verified live.
 >
 > Not affiliated with, endorsed by, or sponsored by LinkedIn Corporation. LinkedIn is a trademark of LinkedIn Corporation.
 
@@ -22,7 +22,7 @@ postline-mcp is built on three rules:
 
 | Capability | Status | Why |
 |---|---|---|
-| Publish a post (text, link card, or one image) to your profile | ✅ Text verified live; link and image built | Self-serve `w_member_social` permission |
+| Publish a post (text, link card, or one image) to your profile | ✅ Text verified live through Claude; link and image built | Self-serve `w_member_social` permission |
 | Comment on / react to a post (by link) | 🔧 Built, not yet verified live | Same permission |
 | Delete your own post | ✅ Verified | Same permission |
 | Edit your own post's text (in place, keeps likes and comments) | ✅ Verified | Same permission; `PARTIAL_UPDATE` on `/rest/posts` |
@@ -208,7 +208,8 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the code fits together 
 - [x] **Phase 0** — Verify publish / edit / delete against the live API — all passed
 - [x] **Phase 1** — Core tools with draft → confirm flow, per-user storage, 35 unit tests
 - [x] **Phase 2** — Remote MCP connector on Cloudflare Workers with LinkedIn OAuth and owner allowlist
-- [ ] **Live verification** — First deployment; verify link, image, comment and react against the live API
+- [x] **Live deployment** — Connected in Claude; text publish, edit, delete and listing verified live (Nov 14, 2026)
+- [ ] **Remaining live checks** — link card, image, comment and react
 - [x] **CI/CD** — GitHub Actions: checks on every push, automatic deploy from `main`
 - [ ] **Phase 3** — Import history from LinkedIn's data export, v1.0 release
 
