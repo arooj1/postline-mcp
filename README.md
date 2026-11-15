@@ -215,6 +215,11 @@ The PDF is kept in your Worker's KV until the post is published or cancelled (at
 
 LinkedIn's API can only publish *now* (`lifecycleState` must be `PUBLISHED`), so scheduling happens in your Worker. Think of it as signing the letter today and dating it for Tuesday: you approve the exact post once, and your Worker sends it on time.
 
+<img alt="Scheduling, step by step: you ask Claude to schedule a post, see the exact preview and the time, and say yes once; your Worker saves the post, its media and an encrypted token, and a cron trigger every 5 minutes publishes due posts to LinkedIn." src="assets/scheduling.svg" width="100%">
+
+<details>
+<summary>Diagram as text</summary>
+
 ```mermaid
 sequenceDiagram
     actor You
@@ -234,6 +239,8 @@ sequenceDiagram
     W->>L: Upload media, POST /rest/posts
     W->>KV: Save post record, delete scheduled data
 ```
+
+</details>
 
 - **You approve at scheduling time.** Nobody confirms again when it publishes, so `schedule_post` shows the exact preview and Claude is told to schedule only after you approve both the post and the time. Images and the PDF are saved as they were previewed.
 - **Times need a UTC offset** (`2026-11-17T08:30:00-05:00`), at least 10 minutes ahead and at most 90 days. Posts go out within 5 minutes of their time.
@@ -255,6 +262,11 @@ Your Worker's address will be `https://postline-mcp.<your-subdomain>.workers.dev
 
 Every push runs the checks. Pushes to `main` deploy automatically. Nothing needs installing on your machine, and you never run `wrangler login`.
 
+<img alt="Deploy pipeline: every git push runs the check job; pushes to main then run the deploy job with your GitHub secrets and update the live Worker, while other branches and pull requests get the checks only." src="assets/deploy.svg" width="100%">
+
+<details>
+<summary>Diagram as text</summary>
+
 ```mermaid
 flowchart LR
     push["git push"] --> check["Check job<br/><i>type-check · tests · build</i>"]
@@ -263,6 +275,8 @@ flowchart LR
     deploy --> live(["Live Worker<br/>workers.dev"])
     check -->|other branches, PRs| stop(["Checks only"])
 ```
+
+</details>
 
 1. **Cloudflare API token.** Go to dash.cloudflare.com → My Profile → **API Tokens** → Create Token → **Edit Cloudflare Workers** template → choose your account → Create. Also copy your **Account ID** from the Workers & Pages page.
 2. **LinkedIn redirect URL.** In your LinkedIn app → **Auth** → *Authorized redirect URLs*, add `https://postline-mcp.<your-subdomain>.workers.dev/callback`.
