@@ -23,9 +23,9 @@ postline-mcp is built on three rules:
 | Capability | Status | Why |
 |---|---|---|
 | Publish a post (text, link card, or one image) to your profile | ✅ Verified live | Self-serve `w_member_social` permission |
-| Publish a carousel (PDF document post) to your profile | 🧪 Built, awaiting live check | Same permission, via LinkedIn's `/rest/documents` upload |
-| Publish 2–20 images in one post | 🧪 Built, awaiting live check | Same permission, `multiImage` content |
-| Schedule posts, list and cancel them | 🧪 Built, awaiting live check | LinkedIn's API has no scheduling, so your Worker publishes them with a cron trigger |
+| Publish a carousel (PDF document post) to your profile | ✅ Verified live | Same permission, via LinkedIn's `/rest/documents` upload |
+| Publish 2–20 images in one post | ✅ Verified live | Same permission, `multiImage` content |
+| Schedule posts, list and cancel them | ✅ Verified live | LinkedIn's API has no scheduling, so your Worker publishes them with a cron trigger |
 | Comment on / react to a post (by link) | ✅ Verified live | Same permission, via LinkedIn's `/v2` endpoints (the newer `/rest` ones are partner-only for these) |
 | Delete your own post | ✅ Verified | Same permission |
 | Edit your own post's text (in place, keeps likes and comments) | ✅ Verified | Same permission; `PARTIAL_UPDATE` on `/rest/posts` |
