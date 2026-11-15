@@ -1,4 +1,4 @@
-<img alt="postline-mcp: Claude drafts. You approve. Posts to your own LinkedIn profile, never without your OK." src="assets/banner-dark.png" width="100%">
+<img alt="postline-mcp: Claude drafts. You approve. An animated flow of three posts: one published now, one scheduled, one sent back for a revision. None gets past the gate without you." src="assets/postline-flow.svg" width="100%">
 
 # postline-mcp
 
