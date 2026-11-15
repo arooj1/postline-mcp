@@ -1,8 +1,4 @@
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/banner-dark.png">
-  <source media="(prefers-color-scheme: light)" srcset="assets/banner-light.png">
-  <img alt="postline-mcp: Claude drafts. You approve. Posts to your own LinkedIn profile, never without your OK." src="assets/banner-dark.png" width="100%">
-</picture>
+<img alt="postline-mcp: Claude drafts. You approve. Posts to your own LinkedIn profile, never without your OK." src="assets/banner-dark.png" width="100%">
 
 # postline-mcp
 
