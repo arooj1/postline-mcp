@@ -51,6 +51,11 @@ LinkedIn's self-serve API is a short list. Here it is in full, including the par
 
 Three parties: Claude, **your own** Cloudflare Worker (this code), and LinkedIn. Claude never sees your LinkedIn token. It only holds a key to your Worker: the ghostwriter gets a desk, not your wallet.
 
+<img alt="How postline works: Claude talks to your own Cloudflare Worker. A publish goes through tools.ts and linkedin.ts to LinkedIn's API, a saved draft goes through store.ts to Cloudflare KV, and sign-in goes through linkedin-handler.ts. Claude never sees your LinkedIn token." src="assets/how-it-works.svg" width="100%">
+
+<details>
+<summary>Diagram as text</summary>
+
 ```mermaid
 flowchart TB
     Claude(["Claude<br/>web · desktop · mobile"])
@@ -74,6 +79,8 @@ flowchart TB
     store --> KV
 ```
 
+</details>
+
 Each file has one job, which keeps changes and failures local:
 
 - **`linkedin.ts`** is the only file that talks to LinkedIn. When LinkedIn changes its API, this is the only file to fix.
@@ -84,6 +91,11 @@ Each file has one job, which keeps changes and failures local:
 ### Sign-in (once, then about every 60 days)
 
 The Worker does OAuth twice. It is a **client** to LinkedIn, getting your token, and a **server** to Claude, issuing Claude its own key.
+
+<img alt="Sign-in, step by step: Claude asks your Worker to authorize, you approve and sign in to LinkedIn, your Worker exchanges the code for a token, reads your member ID, checks the allowlist, and gives Claude its own key." src="assets/sign-in.svg" width="100%">
+
+<details>
+<summary>Diagram as text</summary>
 
 ```mermaid
 sequenceDiagram
@@ -106,9 +118,16 @@ sequenceDiagram
     W-->>C: Claude's key (expires with the LinkedIn token)
 ```
 
+</details>
+
 ### Publishing a post (two turns, on purpose)
 
 Claude can't publish in one step, and that's the point. `draft_post` changes nothing on LinkedIn. `publish_post` needs the `draft_id`, so Claude has to show you the preview first. The ghostwriter hands you the page. You sign it.
+
+<img alt="Publishing a post, step by step: you ask for a draft, Claude shows you the exact preview, and only when you say publish does your Worker post to LinkedIn and return the link." src="assets/publishing.svg" width="100%">
+
+<details>
+<summary>Diagram as text</summary>
 
 ```mermaid
 sequenceDiagram
@@ -129,6 +148,8 @@ sequenceDiagram
     W->>KV: Save post record, delete draft
     W-->>C: Link to the live post
 ```
+
+</details>
 
 ## Tools
 
@@ -155,6 +176,11 @@ sequenceDiagram
 
 A good ghostwriter reads your old work before writing anything new. LinkedIn's API won't return your past posts, but LinkedIn's data export will. Ask Claude to *"import my LinkedIn history"*; it gives you a one-time link. Upload the export ZIP there. Your feed posts (`Shares.csv`) and long-form articles (`Articles/`) are imported; empty drafts are skipped. From then on Claude can call `search_my_posts` to read how you actually write before drafting something new, and to avoid repeating a post you've already made.
 
+<img alt="Writing in your voice, step by step: you drop LinkedIn's export ZIP on a one-time link, your browser parses it locally and sends the posts to your Worker, and Claude later searches them before drafting." src="assets/writing-in-your-voice.svg" width="100%">
+
+<details>
+<summary>Diagram as text</summary>
+
 ```mermaid
 sequenceDiagram
     actor You
@@ -172,6 +198,8 @@ sequenceDiagram
     C->>W: search_my_posts("X")
     W-->>C: Your past posts on X
 ```
+
+</details>
 
 The file is parsed in your browser, not on the server: a free-plan Worker gets about 10 ms of CPU per request, and parsing a large export takes longer. To get the export: LinkedIn → Settings & Privacy → Data privacy → **Get a copy of your data**. If **Posts** isn't offered on its own, choose **Download larger data archive** (up to 24 hours); **Articles** alone arrives within minutes.
 
