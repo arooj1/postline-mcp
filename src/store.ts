@@ -7,6 +7,10 @@
  *   history:<memberId>          -> PostHistory (imported from LinkedIn's data export; one value,
  *                                               so an import costs one KV write on the free plan)
  *   import:<token>              -> ImportTicket (one-time upload link, expires after 15 minutes)
+ *   pdfupload:<token>           -> ImportTicket (one-time PDF upload link, expires after 15 minutes)
+ *   doc:<memberId>:<docId>      -> PDF bytes    (uploaded carousel; metadata = DocumentMeta; expires after 60 days)
+ *   sched:<memberId>:<id>       -> ScheduledPost (metadata = ScheduleMeta, so the publisher lists due posts in one call)
+ *   media:<memberId>:<id>:<n>   -> image bytes  (images of a scheduled post, frozen when it was scheduled)
  */
 
 import type { ImportedPost } from "./importer";
@@ -26,8 +30,7 @@ export interface ImportTicket {
 
 /** Creates a one-time upload link token for a member. */
 export async function createImportTicket(kv: KVNamespace, memberId: string): Promise<string> {
-	const bytes = crypto.getRandomValues(new Uint8Array(24));
-	const token = btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+	const token = randomToken();
 	const ticket: ImportTicket = { memberId, createdAt: new Date().toISOString() };
 	await kv.put(`import:${token}`, JSON.stringify(ticket), { expirationTtl: IMPORT_TTL_SECONDS });
 	return token;
@@ -42,6 +45,28 @@ export async function consumeImportTicket(kv: KVNamespace, token: string): Promi
 	await kv.delete(`import:${token}`);
 }
 
+/** One-time link for uploading a carousel PDF. Same shape and lifetime as an import link. */
+export async function createPdfUploadTicket(kv: KVNamespace, memberId: string): Promise<string> {
+	const token = randomToken();
+	const ticket: ImportTicket = { memberId, createdAt: new Date().toISOString() };
+	await kv.put(`pdfupload:${token}`, JSON.stringify(ticket), { expirationTtl: IMPORT_TTL_SECONDS });
+	return token;
+}
+
+export async function readPdfUploadTicket(kv: KVNamespace, token: string): Promise<ImportTicket | null> {
+	if (!/^[A-Za-z0-9_-]{20,64}$/.test(token)) return null;
+	return kv.get<ImportTicket>(`pdfupload:${token}`, "json");
+}
+
+export async function consumePdfUploadTicket(kv: KVNamespace, token: string): Promise<void> {
+	await kv.delete(`pdfupload:${token}`);
+}
+
+function randomToken(): string {
+	const bytes = crypto.getRandomValues(new Uint8Array(24));
+	return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
 export const DRAFT_TTL_SECONDS = 24 * 60 * 60;
 
 export interface Draft {
@@ -50,15 +75,23 @@ export interface Draft {
 	visibility: Visibility;
 	article?: ArticleInput;
 	image?: { url: string; altText: string };
+	/** 2–20 images, each from a public https URL. */
+	images?: Array<{ url: string; altText: string }>;
+	/** A carousel PDF: one uploaded through a PDF upload link, or a public https URL. */
+	document?: DocumentSource;
 	createdAt: string;
 }
+
+export type DocumentSource = { title: string } & ({ uploadId: string; url?: undefined } | { url: string; uploadId?: undefined });
+
+export type PostKind = "text" | "article" | "image" | "images" | "document";
 
 export interface PostRecord {
 	urn: string;
 	url: string;
 	text: string;
 	visibility: Visibility;
-	kind: "text" | "article" | "image";
+	kind: PostKind;
 	createdAt: string;
 	updatedAt?: string;
 }
@@ -69,8 +102,50 @@ interface PostMeta {
 	preview: string;
 }
 
+export const DOCUMENT_TTL_SECONDS = 60 * 24 * 60 * 60;
+
+export interface DocumentMeta {
+	fileName: string;
+	size: number;
+	createdAt: string;
+}
+
+export type ScheduleStatus = "scheduled" | "publishing" | "failed";
+
+/** A post the member approved for publishing at a set time. */
+export interface ScheduledPost {
+	id: string;
+	memberId: string;
+	publishAt: string;
+	status: ScheduleStatus;
+	/** Set while the publisher is working on it, so two runs never publish it twice. */
+	claimedAt?: string;
+	attempts: number;
+	lastError?: string;
+	text: string;
+	visibility: Visibility;
+	article?: ArticleInput;
+	/** Images frozen at scheduling time; bytes live under media:<memberId>:<id>:<n>. */
+	images?: Array<{ altText: string; contentType: string }>;
+	/** Uploaded PDF (doc:<memberId>:<docId>) frozen at scheduling time. */
+	document?: { docId: string; title: string };
+	/** The LinkedIn token, encrypted with a key derived from COOKIE_ENCRYPTION_KEY. Deleted with the record. */
+	encryptedToken: string;
+	tokenExpiresAt: number;
+	createdAt: string;
+}
+
+/** Kept in KV list metadata so the publisher finds due posts with one list call. */
+export interface ScheduleMeta {
+	publishAt: string;
+	status: ScheduleStatus;
+}
+
 const postKey = (memberId: string, urn: string) => `post:${memberId}:${urn}`;
 const draftKey = (memberId: string, id: string) => `draft:${memberId}:${id}`;
+const docKey = (memberId: string, id: string) => `doc:${memberId}:${id}`;
+export const schedKey = (memberId: string, id: string) => `sched:${memberId}:${id}`;
+const mediaKey = (memberId: string, id: string, n: number) => `media:${memberId}:${id}:${n}`;
 
 export class Store {
 	constructor(
@@ -140,5 +215,69 @@ export class Store {
 		} while (cursor);
 		items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 		return items.slice(0, limit);
+	}
+
+	// ---------- Uploaded carousel PDFs ----------
+
+	async saveDocument(bytes: ArrayBuffer, fileName: string): Promise<string> {
+		const id = crypto.randomUUID();
+		const meta: DocumentMeta = { fileName, size: bytes.byteLength, createdAt: new Date().toISOString() };
+		await this.kv.put(docKey(this.memberId, id), bytes, { metadata: meta, expirationTtl: DOCUMENT_TTL_SECONDS });
+		return id;
+	}
+
+	async getDocument(id: string): Promise<{ bytes: ArrayBuffer; meta: DocumentMeta } | null> {
+		const { value, metadata } = await this.kv.getWithMetadata<DocumentMeta>(docKey(this.memberId, id), "arrayBuffer");
+		return value && metadata ? { bytes: value, meta: metadata } : null;
+	}
+
+	async getDocumentMeta(id: string): Promise<DocumentMeta | null> {
+		const { metadata } = await this.kv.getWithMetadata<DocumentMeta>(docKey(this.memberId, id), "arrayBuffer");
+		return metadata ?? null;
+	}
+
+	async deleteDocument(id: string): Promise<void> {
+		await this.kv.delete(docKey(this.memberId, id));
+	}
+
+	// ---------- Scheduled posts ----------
+
+	async saveScheduled(post: ScheduledPost): Promise<void> {
+		const meta: ScheduleMeta = { publishAt: post.publishAt, status: post.status };
+		await this.kv.put(schedKey(this.memberId, post.id), JSON.stringify(post), { metadata: meta });
+	}
+
+	async getScheduled(id: string): Promise<ScheduledPost | null> {
+		return this.kv.get<ScheduledPost>(schedKey(this.memberId, id), "json");
+	}
+
+	async listScheduled(): Promise<ScheduledPost[]> {
+		const prefix = `sched:${this.memberId}:`;
+		const ids: string[] = [];
+		let cursor: string | undefined;
+		do {
+			const page = await this.kv.list({ prefix, cursor });
+			for (const key of page.keys) ids.push(key.name.slice(prefix.length));
+			cursor = page.list_complete ? undefined : page.cursor;
+		} while (cursor);
+		const posts = await Promise.all(ids.map((id) => this.getScheduled(id)));
+		return posts.filter((p): p is ScheduledPost => p !== null).sort((a, b) => a.publishAt.localeCompare(b.publishAt));
+	}
+
+	async saveMedia(id: string, n: number, bytes: ArrayBuffer): Promise<void> {
+		await this.kv.put(mediaKey(this.memberId, id, n), bytes);
+	}
+
+	async getMedia(id: string, n: number): Promise<ArrayBuffer | null> {
+		return this.kv.get(mediaKey(this.memberId, id, n), "arrayBuffer");
+	}
+
+	/** Removes a scheduled post with its frozen images and PDF. */
+	async deleteScheduled(post: ScheduledPost): Promise<void> {
+		await Promise.all([
+			this.kv.delete(schedKey(this.memberId, post.id)),
+			...(post.images ?? []).map((_, n) => this.kv.delete(mediaKey(this.memberId, post.id, n))),
+			...(post.document ? [this.deleteDocument(post.document.docId)] : []),
+		]);
 	}
 }

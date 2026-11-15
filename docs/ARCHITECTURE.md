@@ -28,12 +28,13 @@ Your LinkedIn token never goes to Claude. Claude only holds a key to your Worker
 | File | Role | Think of it as |
 |---|---|---|
 | `wrangler.jsonc` | Worker settings: name, entry file, variables, KV storage, required secrets | The deployment recipe |
-| `src/index.ts` | Entry point. Routes every request and registers the 8 tools | The front door |
+| `src/index.ts` | Entry point. Routes every request, registers the 15 tools, and runs the scheduled publisher (cron) | The front door |
 | `src/linkedin-handler.ts` | The sign-in pages: consent screen, redirect to LinkedIn, callback | The reception desk |
 | `src/workers-oauth-utils.ts` | Security helpers from Cloudflare: CSRF tokens, cookies, state, consent HTML | The locks on the doors |
 | `src/tools.ts` | What each tool does, plus input rules (schemas) | The job descriptions |
 | `src/linkedin.ts` | Every call to LinkedIn's API, text escaping, link parsing, error messages | The phone line to LinkedIn |
-| `src/store.ts` | Reading and writing drafts, post records, imported history and import links in KV | The filing cabinet |
+| `src/store.ts` | Reading and writing drafts, post records, imported history, upload links, carousel PDFs and scheduled posts in KV | The filing cabinet |
+| `src/crypto.ts` | Encrypts the token copy a scheduled post carries (AES-256-GCM, key from `COOKIE_ENCRYPTION_KEY`) | The safe |
 | `src/importer.ts` | Reads LinkedIn's data export: ZIP, `Shares.csv` → posts, `Articles/*.html` → articles; validates uploads | The archivist |
 | `src/import-page.ts` | The one-time upload page; runs the importer in your browser | The drop box |
 | `src/env.d.ts`, `worker-configuration.d.ts` | TypeScript types for settings and the Workers runtime (the second is generated) | Labels for the drawers |
@@ -77,7 +78,7 @@ Read it bottom-up.
 **`createServer()` (line 36)** runs on each `/mcp` request:
 1. It reads the signed-in member's **props**: `memberId`, `name`, `accessToken`, `expiresAt`. These were saved at sign-in and are decrypted by the library.
 2. It builds a `ToolContext` holding those props, a `Store` for that member, and a `LinkedInClient` using that member's token.
-3. It registers the 8 tools. Each registration has:
+3. It registers the 15 tools. Each registration has:
    - a **name** (`draft_post`)
    - a **description** Claude reads to decide when to use it, including rules like "only publish after explicit approval"
    - an **input schema** from `tools.ts`
@@ -184,6 +185,7 @@ The OAuth library also keeps its own keys in the same bucket: client registratio
 - `helpers.ts` provides a fake KV (`memoryKV`) and a fake `fetch` (`mockFetch`) that records every call.
 - `linkedin.test.ts` checks that each API call has the right URL, headers and body, plus escaping, link parsing and error messages.
 - `importer.test.ts` covers CSV edge cases (quotes, commas and line breaks inside posts), real deflated and stored ZIPs, and upload validation.
+- `scheduling.test.ts` covers carousels, multi-image posts, the processing retry, scheduling rules, the cron publisher (due, retry, failure, double-run guard), cancel, and token encryption.
 - `tools.test.ts` covers the draft → publish flow, image upload, expiry, edit and delete rules, listing, and the token exchange.
 
 Run `npm run check` (type-check plus tests) after any change.

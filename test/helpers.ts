@@ -1,14 +1,23 @@
 /** In-memory stand-in for Cloudflare KV, enough for Store. */
 export function memoryKV() {
-	const data = new Map<string, { value: string; metadata?: unknown; expiresAt?: number }>();
+	const data = new Map<string, { value: string | ArrayBuffer; metadata?: unknown; expiresAt?: number }>();
+	const live = (key: string) => {
+		const entry = data.get(key);
+		return !entry || (entry.expiresAt && entry.expiresAt < Date.now()) ? undefined : entry;
+	};
+	const decode = (value: string | ArrayBuffer, type?: string) =>
+		type === "json" ? JSON.parse(value as string) : type === "arrayBuffer" ? value : value;
 	const kv = {
 		data,
-		async get(key: string, type?: "json") {
-			const entry = data.get(key);
-			if (!entry || (entry.expiresAt && entry.expiresAt < Date.now())) return null;
-			return type === "json" ? JSON.parse(entry.value) : entry.value;
+		async get(key: string, type?: "json" | "arrayBuffer") {
+			const entry = live(key);
+			return entry ? decode(entry.value, type) : null;
 		},
-		async put(key: string, value: string, opts?: { metadata?: unknown; expirationTtl?: number }) {
+		async getWithMetadata(key: string, type?: "json" | "arrayBuffer") {
+			const entry = live(key);
+			return entry ? { value: decode(entry.value, type), metadata: entry.metadata ?? null } : { value: null, metadata: null };
+		},
+		async put(key: string, value: string | ArrayBuffer, opts?: { metadata?: unknown; expirationTtl?: number }) {
 			data.set(key, {
 				value,
 				metadata: opts?.metadata,

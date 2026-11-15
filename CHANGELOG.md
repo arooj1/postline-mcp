@@ -2,6 +2,19 @@
 
 All notable changes to postline-mcp. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.1.0] — 2026-11-15
+
+### Added
+- **Carousels:** `draft_post` takes `document: { upload_id | url, title }` and publishes it as a LinkedIn document post through `/rest/documents` (self-serve `w_member_social`). Document posts retry while LinkedIn processes the PDF.
+- **PDF upload link:** `create_pdf_upload_link` issues a one-time, 15-minute page for uploading a carousel PDF (≤ 20 MB, signature-checked). PDFs are kept in KV until used or cancelled, at most 60 days.
+- **Multi-image posts:** `draft_post` takes `images` (2–20), published as `multiImage` content.
+- **Scheduling:** `schedule_post`, `list_scheduled_posts`, `cancel_scheduled_post`, and a cron trigger (every 5 minutes) that publishes due posts. Approval happens at scheduling time with the exact preview; images and PDFs are frozen then. Times need a UTC offset, 10 minutes to 90 days ahead, and before the sign-in expires. Transient failures retry twice; others are marked failed with the reason.
+- `src/crypto.ts`: AES-256-GCM encryption (HKDF from `COOKIE_ENCRYPTION_KEY`) for the token copy a scheduled post needs.
+
+### Changed
+- `draft_post` now allows one attachment of any kind; the error message says so.
+- README: corrected tool count (15), new capability rows marked "awaiting live check", scheduling and carousel docs. SECURITY.md and PRIVACY.md describe the scheduled-post token copy and uploads.
+
 ## [1.0.0] — 2026-11-14
 
 First stable release: a remote MCP connector for Claude that works with your own LinkedIn profile through LinkedIn's official, self-serve API only.
@@ -19,4 +32,5 @@ First stable release: a remote MCP connector for Claude that works with your own
 - Publish (text, link card, image), edit, delete, list, comment and reaction, through Claude against LinkedIn's live API.
 - Comments and reactions use LinkedIn's unversioned `/v2` endpoints; the versioned `/rest` ones return 403 (partner-only) for self-serve apps.
 
+[1.1.0]: https://github.com/arooj1/postline-mcp/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/arooj1/postline-mcp/releases/tag/v1.0.0

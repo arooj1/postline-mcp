@@ -10,10 +10,10 @@
 import type { AuthRequest, OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import { Hono } from "hono";
 import { IMPORT_LIMITS, sanitizeImportedPosts } from "./importer";
-import { IMPORT_PAGE_HEADERS, renderImportExpired, renderImportPage } from "./import-page";
+import { IMPORT_PAGE_HEADERS, renderImportExpired, renderImportPage, renderPdfUploadExpired, renderPdfUploadPage } from "./import-page";
 import { LinkedInClient } from "./linkedin";
-import { consumeImportTicket, readImportTicket, Store } from "./store";
-import type { Props } from "./tools";
+import { consumeImportTicket, consumePdfUploadTicket, readImportTicket, readPdfUploadTicket, Store } from "./store";
+import { checkPdf, MAX_PDF_BYTES, type Props } from "./tools";
 import {
 	addApprovedClient,
 	bindStateToSession,
@@ -201,6 +201,49 @@ app.post("/import/:token", async (c) => {
 		to: posts[0].date.slice(0, 10),
 	});
 });
+
+// ---------- One-time carousel PDF upload (link created by the create_pdf_upload_link tool) ----------
+
+app.get("/upload/:token", async (c) => {
+	const ticket = await readPdfUploadTicket(c.env.OAUTH_KV, c.req.param("token"));
+	const html = ticket ? renderPdfUploadPage() : renderPdfUploadExpired();
+	return new Response(html, { status: ticket ? 200 : 410, headers: IMPORT_PAGE_HEADERS });
+});
+
+app.post("/upload/:token", async (c) => {
+	const token = c.req.param("token");
+	const ticket = await readPdfUploadTicket(c.env.OAUTH_KV, token);
+	if (!ticket) return c.json({ error: "This upload link has expired or was already used. Ask Claude for a new one." }, 410);
+
+	const origin = c.req.header("Origin");
+	if (origin && origin !== new URL(c.req.url).origin) return c.json({ error: "Cross-site upload refused." }, 403);
+	if (!(c.req.header("Content-Type") ?? "").startsWith("application/pdf")) return c.json({ error: "Expected a PDF." }, 415);
+	const length = Number(c.req.header("Content-Length") ?? 0);
+	if (length > MAX_PDF_BYTES) return c.json({ error: "That PDF is larger than 20 MB." }, 413);
+
+	let bytes: ArrayBuffer;
+	try {
+		bytes = checkPdf(await c.req.arrayBuffer());
+	} catch (err) {
+		return c.json({ error: err instanceof Error ? err.message : "Invalid upload." }, 400);
+	}
+	const fileName = cleanFileName(c.req.header("X-File-Name"));
+	const uploadId = await new Store(c.env.OAUTH_KV, ticket.memberId).saveDocument(bytes, fileName);
+	await consumePdfUploadTicket(c.env.OAUTH_KV, token);
+	return c.json({ upload_id: uploadId, file_name: fileName, size: bytes.byteLength });
+});
+
+/** Keeps an uploaded file's name readable and harmless (it is only ever shown back as text). */
+export function cleanFileName(raw: string | undefined): string {
+	let name = "carousel.pdf";
+	try {
+		if (raw) name = decodeURIComponent(raw);
+	} catch {
+		// keep the default
+	}
+	name = name.replace(/[^\p{L}\p{N} ._()-]/gu, "").trim().slice(0, 120);
+	return name || "carousel.pdf";
+}
 
 function redirectToLinkedIn(request: Request, env: Env, stateToken: string, headers: Record<string, string> = {}) {
 	const url = new URL(LINKEDIN_AUTHORIZE_URL);
