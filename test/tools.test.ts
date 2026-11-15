@@ -88,7 +88,7 @@ describe("draft → publish flow", () => {
 					image: { url: "https://b.com/i.png", alt_text: "i" },
 				}),
 			),
-		).rejects.toThrow(/link or an image, not both/);
+		).rejects.toThrow(/one kind of attachment/);
 	});
 
 	it("schema rejects posts over 3000 characters", () => {

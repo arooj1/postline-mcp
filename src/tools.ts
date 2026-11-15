@@ -14,7 +14,18 @@ import {
 	postUrl,
 	type ReactionLabel,
 } from "./linkedin";
-import { createImportTicket, Store, type PostRecord } from "./store";
+import { decryptToken, encryptToken } from "./crypto";
+import {
+	createImportTicket,
+	createPdfUploadTicket,
+	Store,
+	type Draft,
+	type PostKind,
+	type PostRecord,
+	type ScheduledPost,
+	type ScheduleMeta,
+} from "./store";
+import type { CreatePostInput } from "./linkedin";
 
 /** What the OAuth flow stores for each signed-in member (encrypted by the OAuth provider). */
 export interface Props {
@@ -35,9 +46,22 @@ export interface ToolContext {
 	origin?: string;
 	fetchImpl?: typeof fetch;
 	now?: () => Date;
+	/** COOKIE_ENCRYPTION_KEY: encrypts the token kept with scheduled posts. */
+	secret?: string;
+	/** Injectable for tests. */
+	sleep?: (ms: number) => Promise<void>;
 }
 
 export const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+/** Kept under Cloudflare KV's 25 MiB value limit. LinkedIn itself allows up to 100 MB and 300 pages. */
+export const MAX_PDF_BYTES = 20 * 1024 * 1024;
+/** Earliest and latest times a post can be scheduled for. */
+export const MIN_SCHEDULE_LEAD_MS = 10 * 60_000;
+export const MAX_SCHEDULE_AHEAD_MS = 90 * 86_400_000;
+/** A scheduled post must publish at least this long before the LinkedIn sign-in expires. */
+export const TOKEN_EXPIRY_MARGIN_MS = 86_400_000;
+/** Transient failures are retried on later runs; after this many attempts the post is marked failed. */
+export const MAX_PUBLISH_ATTEMPTS = 3;
 const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/gif"]);
 
 const authorUrn = (p: Props) => `urn:li:person:${p.memberId}`;
@@ -82,7 +106,32 @@ export const schemas = {
 				alt_text: z.string().min(1).max(300).describe("Describes the image for screen readers."),
 			})
 			.optional()
-			.describe("Attach one image. Can't be combined with a link."),
+			.describe("Attach one image. Can't be combined with a link, images or a document."),
+		images: z
+			.array(
+				z.object({
+					url: z.string().url().describe("A public https URL of a JPEG, PNG or GIF, up to 8 MB."),
+					alt_text: z.string().min(1).max(300).describe("Describes the image for screen readers."),
+				}),
+			)
+			.min(2)
+			.max(20)
+			.optional()
+			.describe("Attach 2–20 images, shown as a grid. Can't be combined with a link, a single image or a document."),
+		document: z
+			.object({
+				upload_id: z
+					.string()
+					.uuid()
+					.optional()
+					.describe("The upload_id of a PDF the user uploaded through create_pdf_upload_link."),
+				url: z.string().url().optional().describe("Or: a public https URL of the PDF, up to 20 MB."),
+				title: z.string().min(1).max(200).describe("Title shown above the carousel, e.g. \"MCP, explained\"."),
+			})
+			.optional()
+			.describe(
+				"Attach a PDF, shown as a swipeable carousel (a LinkedIn document post). Give upload_id or url, not both. Can't be combined with a link or images.",
+			),
 	}),
 	publish_post: z.object({
 		draft_id: z.string().uuid().describe("The draft_id returned by draft_post."),
@@ -113,6 +162,19 @@ export const schemas = {
 	delete_imported_history: z.object({
 		confirm: z.literal(true).describe("Must be true. Deletes the imported history from postline (not from LinkedIn)."),
 	}),
+	create_pdf_upload_link: z.object({}),
+	schedule_post: z.object({
+		draft_id: z.string().uuid().describe("The draft_id returned by draft_post."),
+		publish_at: z
+			.string()
+			.describe(
+				"When to publish, as an ISO 8601 date-time WITH a UTC offset, e.g. 2026-11-17T08:30:00-05:00. At least 10 minutes from now.",
+			),
+	}),
+	list_scheduled_posts: z.object({}),
+	cancel_scheduled_post: z.object({
+		scheduled_id: z.string().uuid().describe("The scheduled_id returned by schedule_post or list_scheduled_posts."),
+	}),
 	react_to_post: z.object({
 		post: z.string().min(1).describe("Link to the post, or its urn:li:… ID."),
 		reaction: z
@@ -135,65 +197,130 @@ export async function getMe(ctx: ToolContext): Promise<string> {
 }
 
 export async function draftPost(ctx: ToolContext, input: In<"draft_post">): Promise<string> {
-	if (input.link && input.image) throw new Error("A post can have a link or an image, not both.");
+	const attachments = [input.link, input.image, input.images, input.document].filter(Boolean).length;
+	if (attachments > 1) throw new Error("A post can have one kind of attachment: a link, an image, 2–20 images, or a PDF document.");
 	if (input.link && !input.link.url.startsWith("https://")) throw new Error("Link URLs must start with https://.");
 	if (input.image && !input.image.url.startsWith("https://")) throw new Error("Image URLs must start with https://.");
+	if (input.images?.some((i) => !i.url.startsWith("https://"))) throw new Error("Image URLs must start with https://.");
+	let document: Draft["document"];
+	if (input.document) {
+		const { upload_id, url, title } = input.document;
+		if (!!upload_id === !!url) throw new Error("For a document, give either upload_id (from create_pdf_upload_link) or url, not both.");
+		if (upload_id) {
+			if (!(await ctx.store.getDocumentMeta(upload_id))) {
+				throw new Error("That uploaded PDF wasn't found. It may have expired or been used already. Create a new upload link.");
+			}
+			document = { uploadId: upload_id, title };
+		} else {
+			if (!url!.startsWith("https://")) throw new Error("Document URLs must start with https://.");
+			document = { url: url!, title };
+		}
+	}
 	const draft = await ctx.store.saveDraft({
 		text: input.text,
 		visibility: input.visibility,
 		article: input.link,
 		image: input.image ? { url: input.image.url, altText: input.image.alt_text } : undefined,
+		images: input.images?.map((i) => ({ url: i.url, altText: i.alt_text })),
+		document,
 	});
-	const attachment = draft.article
-		? `Link card: ${draft.article.title} (${draft.article.url})`
-		: draft.image
-			? `Image: ${draft.image.url} (alt text: "${draft.image.altText}")`
-			: "Attachment: none";
 	return [
 		"DRAFT — nothing has been posted to LinkedIn.",
 		`draft_id: ${draft.id}`,
 		`Visibility: ${draft.visibility === "PUBLIC" ? "Public" : "Connections only"}`,
-		attachment,
+		await describeAttachment(ctx, draft),
 		`Length: ${draft.text.length}/${MAX_POST_LENGTH} characters`,
 		"",
 		"----- post text -----",
 		draft.text,
 		"---------------------",
 		"",
-		"Show this preview to the user. Call publish_post with this draft_id only after they explicitly say to publish. The draft expires in 24 hours.",
+		"Show this preview to the user. Call publish_post (now) or schedule_post (later) with this draft_id only after they explicitly approve it. The draft expires in 24 hours.",
 	].join("\n");
 }
+
+async function describeAttachment(ctx: ToolContext, d: Pick<Draft, "article" | "image" | "images" | "document">): Promise<string> {
+	if (d.article) return `Link card: ${d.article.title} (${d.article.url})`;
+	if (d.image) return `Image: ${d.image.url} (alt text: "${d.image.altText}")`;
+	if (d.images) return [`Images (${d.images.length}, in this order):`, ...d.images.map((i, n) => `  ${n + 1}. ${i.url} (alt text: "${i.altText}")`)].join("\n");
+	if (d.document) {
+		if (d.document.uploadId) {
+			const meta = await ctx.store.getDocumentMeta(d.document.uploadId);
+			const file = meta ? `${meta.fileName}, ${(meta.size / 1024 / 1024).toFixed(1)} MB` : "uploaded PDF";
+			return `Carousel (PDF): "${d.document.title}" (${file})`;
+		}
+		return `Carousel (PDF): "${d.document.title}" (${d.document.url})`;
+	}
+	return "Attachment: none";
+}
+
+const kindOf = (d: Pick<Draft, "article" | "image" | "images" | "document">): PostKind =>
+	d.article ? "article" : d.image ? "image" : d.images ? "images" : d.document ? "document" : "text";
 
 export async function publishPost(ctx: ToolContext, input: In<"publish_post">): Promise<string> {
 	assertTokenValid(ctx);
 	const draft = await ctx.store.getDraft(input.draft_id);
-	if (!draft) throw new Error("That draft wasn't found. It may have expired (drafts last 24 hours) or already been published. Create a new draft.");
+	if (!draft) throw new Error("That draft wasn't found. It may have expired (drafts last 24 hours) or already been published or scheduled. Create a new draft.");
 
-	let image: { urn: string; altText: string } | undefined;
+	const owner = authorUrn(ctx.props);
+	const content: Partial<CreatePostInput> = {};
 	if (draft.image) {
 		const { bytes, contentType } = await downloadImage(draft.image.url, ctx.fetchImpl);
-		const urn = await ctx.linkedin.uploadImage(authorUrn(ctx.props), bytes, contentType);
-		image = { urn, altText: draft.image.altText };
+		content.image = { urn: await ctx.linkedin.uploadImage(owner, bytes, contentType), altText: draft.image.altText };
+	} else if (draft.images) {
+		content.images = [];
+		for (const img of draft.images) {
+			const { bytes, contentType } = await downloadImage(img.url, ctx.fetchImpl);
+			content.images.push({ urn: await ctx.linkedin.uploadImage(owner, bytes, contentType), altText: img.altText });
+		}
+	} else if (draft.document) {
+		const bytes = await loadDraftPdf(ctx, draft.document);
+		content.document = { urn: await ctx.linkedin.uploadDocument(owner, bytes), title: draft.document.title };
 	}
 
-	const urn = await ctx.linkedin.createPost({
-		authorUrn: authorUrn(ctx.props),
-		text: draft.text,
-		visibility: draft.visibility,
-		article: draft.article,
-		image,
-	});
+	const urn = await createPostWithRetry(ctx.linkedin, { authorUrn: owner, text: draft.text, visibility: draft.visibility, article: draft.article, ...content }, ctx.sleep);
 	const record: PostRecord = {
 		urn,
 		url: postUrl(urn),
 		text: draft.text,
 		visibility: draft.visibility,
-		kind: draft.article ? "article" : draft.image ? "image" : "text",
+		kind: kindOf(draft),
 		createdAt: (ctx.now ?? (() => new Date()))().toISOString(),
 	};
 	await ctx.store.savePost(record);
 	await ctx.store.deleteDraft(draft.id);
+	if (draft.document?.uploadId) await ctx.store.deleteDocument(draft.document.uploadId);
 	return `Published to LinkedIn.\nLink: ${record.url}\nPost ID: ${urn}`;
+}
+
+async function loadDraftPdf(ctx: ToolContext, doc: NonNullable<Draft["document"]>): Promise<ArrayBuffer> {
+	if (doc.uploadId) {
+		const found = await ctx.store.getDocument(doc.uploadId);
+		if (!found) throw new Error("The uploaded PDF has expired or was already used. Create a new upload link and draft again.");
+		return found.bytes;
+	}
+	return downloadPdf(doc.url!, ctx.fetchImpl);
+}
+
+/**
+ * LinkedIn processes an uploaded PDF before a post can use it. If the post is created
+ * too early it is rejected, so document posts retry a few times with a growing wait.
+ */
+export async function createPostWithRetry(
+	linkedin: LinkedInClient,
+	input: CreatePostInput,
+	sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+): Promise<string> {
+	const waits = input.document ? [2000, 4000, 8000] : [];
+	for (let attempt = 0; ; attempt++) {
+		try {
+			return await linkedin.createPost(input);
+		} catch (err) {
+			const retryable = err instanceof LinkedInError && [400, 409, 422, 500, 502, 503, 504].includes(err.status);
+			if (!retryable || attempt >= waits.length) throw err;
+			await sleep(waits[attempt]);
+		}
+	}
 }
 
 export async function editPost(ctx: ToolContext, input: In<"edit_post">): Promise<string> {
@@ -269,6 +396,232 @@ export async function createImportLink(ctx: ToolContext): Promise<string> {
 		"Give the user this link. They open it in their browser and upload the ZIP from LinkedIn's \"Get a copy of your data\" (with Posts selected), or the Shares.csv inside it.",
 		"Importing replaces any history imported before. After the upload, search_my_posts and list_my_posts include those posts.",
 	].join("\n");
+}
+
+export async function createPdfUploadLink(ctx: ToolContext): Promise<string> {
+	if (!ctx.kv || !ctx.origin) throw new Error("Upload links aren't available on this deployment.");
+	const token = await createPdfUploadTicket(ctx.kv, ctx.props.memberId);
+	return [
+		`PDF upload link (works once, expires in 15 minutes): ${ctx.origin}/upload/${token}`,
+		"",
+		"Give the user this link. They open it in their browser and choose the carousel PDF (up to 20 MB). The page shows an upload_id when it's done.",
+		"Then call draft_post with document: { upload_id, title }. Uploaded PDFs are kept for 60 days, or until the post using them is published or cancelled.",
+	].join("\n");
+}
+
+// ---------- Scheduling ----------
+
+/** Parses an ISO 8601 date-time that carries an explicit offset (Z or ±hh:mm). */
+export function parsePublishAt(value: string): Date {
+	const trimmed = value.trim();
+	if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/i.test(trimmed)) {
+		throw new Error(`publish_at must be an ISO 8601 date-time with a UTC offset, e.g. 2026-11-17T08:30:00-05:00. Got "${value}".`);
+	}
+	const date = new Date(trimmed);
+	if (Number.isNaN(date.getTime())) throw new Error(`"${value}" isn't a real date and time.`);
+	return date;
+}
+
+const formatWhen = (iso: string) => `${iso.replace("T", " ").slice(0, 16)} UTC`;
+
+export async function schedulePost(ctx: ToolContext, input: In<"schedule_post">): Promise<string> {
+	assertTokenValid(ctx);
+	if (!ctx.secret) throw new Error("Scheduling isn't available on this deployment (COOKIE_ENCRYPTION_KEY is missing).");
+	const draft = await ctx.store.getDraft(input.draft_id);
+	if (!draft) throw new Error("That draft wasn't found. It may have expired (drafts last 24 hours) or already been published or scheduled. Create a new draft.");
+
+	const now = (ctx.now ?? (() => new Date()))().getTime();
+	const when = parsePublishAt(input.publish_at);
+	if (when.getTime() < now + MIN_SCHEDULE_LEAD_MS) throw new Error("Schedule at least 10 minutes ahead. To post now, use publish_post.");
+	if (when.getTime() > now + MAX_SCHEDULE_AHEAD_MS) throw new Error("Posts can be scheduled up to 90 days ahead.");
+	if (when.getTime() > ctx.props.expiresAt - TOKEN_EXPIRY_MARGIN_MS) {
+		throw new Error(
+			`Your LinkedIn sign-in expires on ${dateOnly(ctx.props.expiresAt)}, so posts can only be scheduled until the day before. Reconnect postline (to get a fresh 60-day sign-in), then schedule it.`,
+		);
+	}
+
+	const id = crypto.randomUUID();
+	// Freeze the media now: what the user approved is exactly what gets published.
+	let images: ScheduledPost["images"];
+	const sources = draft.image ? [draft.image] : draft.images;
+	if (sources) {
+		images = [];
+		try {
+			for (const [n, img] of sources.entries()) {
+				const { bytes, contentType } = await downloadImage(img.url, ctx.fetchImpl);
+				await ctx.store.saveMedia(id, n, bytes);
+				images.push({ altText: img.altText, contentType });
+			}
+		} catch (err) {
+			// Don't leave half a post's images behind.
+			await ctx.store.deleteScheduled({ id, images } as ScheduledPost);
+			throw err;
+		}
+	}
+	let document: ScheduledPost["document"];
+	if (draft.document) {
+		if (draft.document.uploadId) {
+			if (!(await ctx.store.getDocumentMeta(draft.document.uploadId))) {
+				throw new Error("The uploaded PDF has expired or was already used. Create a new upload link and draft again.");
+			}
+			document = { docId: draft.document.uploadId, title: draft.document.title };
+		} else {
+			const bytes = await downloadPdf(draft.document.url!, ctx.fetchImpl);
+			document = { docId: await ctx.store.saveDocument(bytes, fileNameFromUrl(draft.document.url!)), title: draft.document.title };
+		}
+	}
+
+	const post: ScheduledPost = {
+		id,
+		memberId: ctx.props.memberId,
+		publishAt: when.toISOString(),
+		status: "scheduled",
+		attempts: 0,
+		text: draft.text,
+		visibility: draft.visibility,
+		article: draft.article,
+		images,
+		document,
+		encryptedToken: await encryptToken(ctx.secret, ctx.props.accessToken, `${ctx.props.memberId}:${id}`),
+		tokenExpiresAt: ctx.props.expiresAt,
+		createdAt: new Date(now).toISOString(),
+	};
+	await ctx.store.saveScheduled(post);
+	await ctx.store.deleteDraft(draft.id);
+
+	return [
+		"SCHEDULED — not on LinkedIn yet.",
+		`scheduled_id: ${id}`,
+		`Publishes at: ${formatWhen(post.publishAt)} (you asked for ${input.publish_at.trim()}); postline checks every 5 minutes.`,
+		`Visibility: ${post.visibility === "PUBLIC" ? "Public" : "Connections only"}`,
+		describeScheduledAttachment(post),
+		"",
+		"----- post text -----",
+		post.text,
+		"---------------------",
+		"",
+		"Images and PDF are saved as they are now. To change anything, cancel_scheduled_post and draft it again.",
+	].join("\n");
+}
+
+function describeScheduledAttachment(p: Pick<ScheduledPost, "article" | "images" | "document">): string {
+	if (p.article) return `Link card: ${p.article.title} (${p.article.url})`;
+	if (p.images) return p.images.length === 1 ? `Image (alt text: "${p.images[0].altText}")` : `Images: ${p.images.length}`;
+	if (p.document) return `Carousel (PDF): "${p.document.title}"`;
+	return "Attachment: none";
+}
+
+export async function listScheduledPosts(ctx: ToolContext): Promise<string> {
+	const posts = await ctx.store.listScheduled();
+	if (posts.length === 0) return "Nothing is scheduled.";
+	const lines = posts.map((p, i) => {
+		const status = p.status === "failed" ? `FAILED: ${p.lastError ?? "unknown error"}` : p.status === "publishing" ? "publishing now" : "scheduled";
+		return [
+			`${i + 1}. ${formatWhen(p.publishAt)} — ${status}`,
+			`   scheduled_id: ${p.id}`,
+			`   ${describeScheduledAttachment(p)} · ${p.visibility === "PUBLIC" ? "Public" : "Connections only"}`,
+			`   ${p.text.replace(/\s+/g, " ").slice(0, 140)}`,
+		].join("\n");
+	});
+	return [`${posts.length} scheduled post(s), soonest first.`, ...lines].join("\n");
+}
+
+export async function cancelScheduledPost(ctx: ToolContext, input: In<"cancel_scheduled_post">): Promise<string> {
+	const post = await ctx.store.getScheduled(input.scheduled_id);
+	if (!post) throw new Error("No scheduled post with that ID. It may already have been published or cancelled; check list_my_posts.");
+	if (post.status === "publishing") throw new Error("That post is being published right now. If it goes out, delete it with delete_post.");
+	await ctx.store.deleteScheduled(post);
+	return `Cancelled the post scheduled for ${formatWhen(post.publishAt)}. Nothing was posted, and its saved images, PDF and token were deleted.`;
+}
+
+export interface PublisherDeps {
+	kv: KVNamespace;
+	secret: string;
+	version?: string;
+	fetchImpl?: typeof fetch;
+	now?: () => Date;
+	sleep?: (ms: number) => Promise<void>;
+}
+
+/** A claim older than this is treated as abandoned (the run that took it crashed). */
+const STALE_CLAIM_MS = 15 * 60_000;
+
+/**
+ * Publishes every scheduled post that is due. Run by the Worker's cron trigger.
+ * Returns one line per post handled, for logs (never includes tokens or post text).
+ */
+export async function publishDuePosts(deps: PublisherDeps): Promise<string[]> {
+	const now = (deps.now ?? (() => new Date()))();
+	const due: Array<{ memberId: string; id: string }> = [];
+	let cursor: string | undefined;
+	do {
+		const page = await deps.kv.list<ScheduleMeta>({ prefix: "sched:", cursor });
+		for (const key of page.keys) {
+			const meta = key.metadata;
+			if (!meta || meta.status === "failed" || meta.publishAt > now.toISOString()) continue;
+			const [, memberId, id] = key.name.split(":");
+			due.push({ memberId, id });
+		}
+		cursor = page.list_complete ? undefined : page.cursor;
+	} while (cursor);
+
+	const log: string[] = [];
+	for (const { memberId, id } of due) {
+		const store = new Store(deps.kv, memberId);
+		const post = await store.getScheduled(id);
+		if (!post) continue;
+		if (post.status === "publishing" && post.claimedAt && now.getTime() - Date.parse(post.claimedAt) < STALE_CLAIM_MS) continue;
+		post.status = "publishing";
+		post.claimedAt = now.toISOString();
+		post.attempts += 1;
+		await store.saveScheduled(post);
+		try {
+			if (now.getTime() >= post.tokenExpiresAt) throw new Error("The LinkedIn sign-in expired before this post was due. Reconnect postline and schedule it again.");
+			const token = await decryptToken(deps.secret, post.encryptedToken, `${memberId}:${id}`);
+			const linkedin = new LinkedInClient(token, deps.version, deps.fetchImpl);
+			const owner = `urn:li:person:${memberId}`;
+			const content: Partial<CreatePostInput> = {};
+			if (post.images) {
+				const uploaded = [];
+				for (const [n, img] of post.images.entries()) {
+					const bytes = await store.getMedia(id, n);
+					if (!bytes) throw new Error(`Image ${n + 1} of this post is missing from storage.`);
+					uploaded.push({ urn: await linkedin.uploadImage(owner, bytes, img.contentType), altText: img.altText });
+				}
+				if (uploaded.length === 1) content.image = uploaded[0];
+				else content.images = uploaded;
+			}
+			if (post.document) {
+				const doc = await store.getDocument(post.document.docId);
+				if (!doc) throw new Error("This post's PDF is missing from storage (uploaded PDFs are kept for 60 days).");
+				content.document = { urn: await linkedin.uploadDocument(owner, doc.bytes), title: post.document.title };
+			}
+			const urn = await createPostWithRetry(
+				linkedin,
+				{ authorUrn: owner, text: post.text, visibility: post.visibility, article: post.article, ...content },
+				deps.sleep,
+			);
+			await store.savePost({
+				urn,
+				url: postUrl(urn),
+				text: post.text,
+				visibility: post.visibility,
+				kind: post.article ? "article" : post.document ? "document" : post.images ? (post.images.length > 1 ? "images" : "image") : "text",
+				createdAt: now.toISOString(),
+			});
+			await store.deleteScheduled(post);
+			log.push(`published ${id} as ${urn}`);
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			const transient = !(err instanceof LinkedInError) ? false : err.status === 429 || err.status >= 500;
+			post.status = transient && post.attempts < MAX_PUBLISH_ATTEMPTS ? "scheduled" : "failed";
+			post.lastError = message;
+			post.claimedAt = undefined;
+			await store.saveScheduled(post);
+			log.push(`${post.status === "failed" ? "failed" : "will retry"} ${id}: ${message}`);
+		}
+	}
+	return log;
 }
 
 /** Max characters of post text returned by one search, to keep responses a sensible size. */
@@ -370,4 +723,31 @@ export async function downloadImage(
 	const bytes = await res.arrayBuffer();
 	if (bytes.byteLength > MAX_IMAGE_BYTES) throw new Error("The image is larger than 8 MB.");
 	return { bytes, contentType };
+}
+
+export async function downloadPdf(url: string, fetchImpl: typeof fetch = (...a) => fetch(...a)): Promise<ArrayBuffer> {
+	if (!url.startsWith("https://")) throw new Error("Document URLs must start with https://.");
+	const res = await fetchImpl(url, { redirect: "follow" });
+	if (!res.ok) throw new Error(`Couldn't download the PDF (HTTP ${res.status}).`);
+	const declared = Number(res.headers.get("content-length") ?? 0);
+	if (declared > MAX_PDF_BYTES) throw new Error("The PDF is larger than 20 MB.");
+	const bytes = await res.arrayBuffer();
+	return checkPdf(bytes);
+}
+
+/** Size and file-signature check shared by downloads and the upload page. */
+export function checkPdf(bytes: ArrayBuffer): ArrayBuffer {
+	if (bytes.byteLength > MAX_PDF_BYTES) throw new Error("The PDF is larger than 20 MB.");
+	const head = new TextDecoder().decode(new Uint8Array(bytes.slice(0, 5)));
+	if (head !== "%PDF-") throw new Error("That file isn't a PDF.");
+	return bytes;
+}
+
+export function fileNameFromUrl(url: string): string {
+	try {
+		const last = new URL(url).pathname.split("/").filter(Boolean).pop();
+		return last ? decodeURIComponent(last).slice(0, 120) : "document.pdf";
+	} catch {
+		return "document.pdf";
+	}
 }

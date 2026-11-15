@@ -107,3 +107,44 @@ export function renderImportExpired(): string {
 	return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Link expired · postline</title><style>${STYLE}</style></head><body>
 <h1>This import link has expired or was already used</h1><p>Ask Claude for a new one: <i>"create an import link for my LinkedIn history"</i>.</p></body></html>`;
 }
+
+/** The one-time PDF upload page for carousels. The PDF is sent as-is; the server checks size and type. */
+export function renderPdfUploadPage(): string {
+	return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Upload a carousel PDF · postline</title><style>${STYLE}</style></head><body>
+<h1><img src="https://raw.githubusercontent.com/arooj1/postline-mcp/main/assets/logo.png" alt="">Upload a carousel PDF</h1>
+<p class="muted">Choose the PDF for your LinkedIn carousel (up to 20 MB). Each page becomes one slide. It is stored only in your own postline deployment and deleted once the post is published or cancelled, or after 60 days. This link works once and expires 15 minutes after it was created.</p>
+<label class="drop" id="drop"><input type="file" id="file" accept="application/pdf,.pdf" hidden><span id="pick">Choose or drop the PDF here</span></label>
+<button id="go" disabled>Upload</button>
+<div id="status" role="status"></div>
+<script>
+const fileInput = document.getElementById("file"), drop = document.getElementById("drop"), go = document.getElementById("go"),
+  status = document.getElementById("status"), pick = document.getElementById("pick");
+let chosen = null;
+function show(msg, cls) { status.textContent = msg; status.className = cls || ""; }
+function choose(f) { chosen = f; pick.textContent = f ? f.name + " (" + (f.size / 1048576).toFixed(1) + " MB)" : "Choose or drop the PDF here"; go.disabled = !f; show(""); }
+fileInput.addEventListener("change", () => choose(fileInput.files[0] || null));
+drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
+drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+drop.addEventListener("drop", (e) => { e.preventDefault(); drop.classList.remove("over"); choose(e.dataTransfer.files[0] || null); });
+go.addEventListener("click", async () => {
+  if (!chosen) { show("Choose a file first.", "err"); return; }
+  if (chosen.size > 20 * 1048576) { show("That PDF is larger than 20 MB.", "err"); return; }
+  go.disabled = true; show("Uploading…");
+  try {
+    const res = await fetch(location.pathname, { method: "POST", headers: { "Content-Type": "application/pdf", "X-File-Name": encodeURIComponent(chosen.name) }, body: chosen });
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(out.error || ("Upload failed (HTTP " + res.status + ")."));
+    show("Uploaded " + out.file_name + ".\\n\\nupload_id: " + out.upload_id + "\\n\\nGo back to Claude and paste this upload_id, or just say \\"done\\".", "ok");
+  } catch (err) {
+    show(err && err.message ? err.message : String(err), "err");
+    go.disabled = false;
+  }
+});
+</script></body></html>`;
+}
+
+export function renderPdfUploadExpired(): string {
+	return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Link expired · postline</title><style>${STYLE}</style></head><body>
+<h1>This upload link has expired or was already used</h1><p>Ask Claude for a new one: <i>"create a PDF upload link"</i>.</p></body></html>`;
+}

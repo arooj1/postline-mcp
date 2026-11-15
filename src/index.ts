@@ -6,23 +6,28 @@ import { LinkedInClient } from "./linkedin";
 import { LinkedInHandler } from "./linkedin-handler";
 import { Store } from "./store";
 import {
+	cancelScheduledPost,
 	commentOnPost,
 	createImportLink,
+	createPdfUploadLink,
 	deleteImportedHistory,
 	deletePost,
 	draftPost,
 	editPost,
 	getMe,
 	listMyPosts,
+	listScheduledPosts,
+	publishDuePosts,
 	publishPost,
 	reactToPost,
+	schedulePost,
 	schemas,
 	searchMyPosts,
 	type Props,
 	type ToolContext,
 } from "./tools";
 
-const VERSION = "1.0.0";
+const VERSION = "1.1.0";
 
 type TextResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
 
@@ -47,6 +52,7 @@ function createServer() {
 		linkedin: new LinkedInClient(props.accessToken, env.LINKEDIN_VERSION || undefined),
 		kv: env.OAUTH_KV,
 		origin: new URL(env.MCP_RESOURCE).origin,
+		secret: env.COOKIE_ENCRYPTION_KEY,
 	};
 
 	server.registerTool(
@@ -65,7 +71,7 @@ function createServer() {
 		{
 			title: "Draft a LinkedIn post",
 			description:
-				"Prepares a LinkedIn post for review WITHOUT publishing it. Returns a draft_id and an exact preview. Always show the preview to the user and wait for their explicit approval before calling publish_post. To revise, call draft_post again.",
+				"Prepares a LinkedIn post for review WITHOUT publishing it: text only, or with a link card, one image, 2–20 images, or a PDF carousel (document). Returns a draft_id and an exact preview. Always show the preview to the user and wait for their explicit approval before calling publish_post or schedule_post. To revise, call draft_post again.",
 			inputSchema: schemas.draft_post,
 			annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
 		},
@@ -82,6 +88,53 @@ function createServer() {
 			annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
 		},
 		async (input) => run(() => publishPost(ctx, input)),
+	);
+
+	server.registerTool(
+		"schedule_post",
+		{
+			title: "Schedule a drafted LinkedIn post",
+			description:
+				"Schedules a draft created by draft_post to publish automatically at a set time (checked every 5 minutes). Only call this after the user has seen the draft preview AND explicitly approved both the post and the time: nobody confirms again when it publishes. Images and the PDF are saved as they are now. Returns a scheduled_id.",
+			inputSchema: schemas.schedule_post,
+			annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+		},
+		async (input) => run(() => schedulePost(ctx, input)),
+	);
+
+	server.registerTool(
+		"list_scheduled_posts",
+		{
+			title: "List scheduled LinkedIn posts",
+			description: "Lists the user's scheduled posts, soonest first, with their scheduled_id, time, status and any error.",
+			inputSchema: schemas.list_scheduled_posts,
+			annotations: { readOnlyHint: true, openWorldHint: false },
+		},
+		async () => run(() => listScheduledPosts(ctx)),
+	);
+
+	server.registerTool(
+		"cancel_scheduled_post",
+		{
+			title: "Cancel a scheduled LinkedIn post",
+			description:
+				"Cancels a scheduled post so it is never published, and deletes its saved images, PDF and token. Nothing on LinkedIn changes. Use it also to clear a post that failed.",
+			inputSchema: schemas.cancel_scheduled_post,
+			annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+		},
+		async (input) => run(() => cancelScheduledPost(ctx, input)),
+	);
+
+	server.registerTool(
+		"create_pdf_upload_link",
+		{
+			title: "Upload a carousel PDF",
+			description:
+				"Creates a one-time upload link (valid 15 minutes) where the user uploads a PDF for a LinkedIn carousel (document post). The page shows an upload_id; pass it to draft_post as document.upload_id. Give the link to the user; they open it in a browser.",
+			inputSchema: schemas.create_pdf_upload_link,
+			annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+		},
+		async () => run(() => createPdfUploadLink(ctx)),
 	);
 
 	server.registerTool(
@@ -184,7 +237,7 @@ function createServer() {
 
 const mcpHandler = createMcpHandler(createServer);
 
-export default new OAuthProvider<Env>({
+const provider = new OAuthProvider<Env>({
 	apiHandler: { fetch: (request, bindings, ctx) => mcpHandler(request, bindings, ctx) } satisfies ExportedHandler<Env>,
 	apiRoute: "/mcp",
 	authorizeEndpoint: "/authorize",
@@ -205,3 +258,19 @@ export default new OAuthProvider<Env>({
 		if (grantType === GrantType.AUTHORIZATION_CODE) return { refreshTokenTTL: secondsLeft };
 	},
 });
+
+export default {
+	fetch: (request, bindings, ctx) => provider.fetch(request, bindings, ctx),
+	// Cron trigger (wrangler.jsonc → triggers.crons): publishes scheduled posts that are due.
+	scheduled: async (_controller, bindings, ctx) => {
+		ctx.waitUntil(
+			publishDuePosts({
+				kv: bindings.OAUTH_KV,
+				secret: bindings.COOKIE_ENCRYPTION_KEY,
+				version: bindings.LINKEDIN_VERSION || undefined,
+			}).then((log) => {
+				for (const line of log) console.log(`scheduled: ${line}`);
+			}),
+		);
+	},
+} satisfies ExportedHandler<Env>;

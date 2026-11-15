@@ -9,6 +9,9 @@ export const DEFAULT_LINKEDIN_VERSION = "202609";
 /** LinkedIn's documented limit for post commentary. */
 export const MAX_POST_LENGTH = 3000;
 export const MAX_COMMENT_LENGTH = 1250;
+/** LinkedIn accepts 2–20 images in one multi-image post. */
+export const MIN_MULTI_IMAGES = 2;
+export const MAX_MULTI_IMAGES = 20;
 
 export type Visibility = "PUBLIC" | "CONNECTIONS";
 
@@ -41,6 +44,10 @@ export interface CreatePostInput {
 	visibility: Visibility;
 	article?: ArticleInput;
 	image?: { urn: string; altText: string };
+	/** 2–20 images shown as a grid. */
+	images?: Array<{ urn: string; altText: string }>;
+	/** A PDF shown as a swipeable carousel (LinkedIn calls it a document post). */
+	document?: { urn: string; title: string };
 }
 
 export class LinkedInError extends Error {
@@ -179,6 +186,10 @@ export class LinkedInClient {
 			};
 		} else if (input.image) {
 			body.content = { media: { id: input.image.urn, altText: input.image.altText } };
+		} else if (input.images) {
+			body.content = { multiImage: { images: input.images.map((i) => ({ id: i.urn, altText: i.altText })) } };
+		} else if (input.document) {
+			body.content = { media: { id: input.document.urn, title: input.document.title } };
 		}
 		const res = await this.request(
 			"/rest/posts",
@@ -213,16 +224,38 @@ export class LinkedInClient {
 
 	/** Uploads image bytes and returns the image URN to attach to a post. */
 	async uploadImage(ownerUrn: string, bytes: ArrayBuffer, contentType: string): Promise<string> {
+		return this.upload("images", "image", ownerUrn, bytes, contentType);
+	}
+
+	/**
+	 * Uploads a PDF and returns the document URN to attach to a post. LinkedIn renders each
+	 * page as a slide. Works with the self-serve w_member_social permission on a member's
+	 * own profile (posting a document as a Company Page needs partner access).
+	 */
+	async uploadDocument(ownerUrn: string, bytes: ArrayBuffer): Promise<string> {
+		return this.upload("documents", "document", ownerUrn, bytes, "application/pdf");
+	}
+
+	/** initializeUpload, then PUT the bytes to the URL LinkedIn returns. */
+	private async upload(
+		resource: "images" | "documents",
+		field: "image" | "document",
+		ownerUrn: string,
+		bytes: ArrayBuffer,
+		contentType: string,
+	): Promise<string> {
 		const init = await this.request(
-			"/rest/images?action=initializeUpload",
+			`/rest/${resource}?action=initializeUpload`,
 			{
 				method: "POST",
 				headers: this.headers(),
 				body: JSON.stringify({ initializeUploadRequest: { owner: ownerUrn } }),
 			},
-			"start the image upload",
+			`start the ${field} upload`,
 		);
-		const { value } = (await init.json()) as { value: { uploadUrl: string; image: string } };
+		const { value } = (await init.json()) as { value: { uploadUrl: string } & Record<string, string> };
+		const urn = value[field];
+		if (!value.uploadUrl || !urn) throw new LinkedInError(init.status, "", `LinkedIn didn't return an upload address for the ${field}.`);
 		const put = await this.fetchImpl(value.uploadUrl, {
 			method: "PUT",
 			headers: { Authorization: `Bearer ${this.accessToken}`, "Content-Type": contentType },
@@ -230,9 +263,9 @@ export class LinkedInClient {
 		});
 		if (!put.ok) {
 			const body = await put.text();
-			throw new LinkedInError(put.status, body, describeFailure("upload the image", put.status, body));
+			throw new LinkedInError(put.status, body, describeFailure(`upload the ${field}`, put.status, body));
 		}
-		return value.image;
+		return urn;
 	}
 
 	/**

@@ -4,7 +4,7 @@
 
 An open-source MCP connector that lets Claude draft, publish, edit and delete posts on **your own** LinkedIn profile — using only LinkedIn's official API.
 
-> **Status:** v1.0 candidate — deployed and working as a Claude custom connector. The 8 posting tools are verified live through Claude (Nov 14, 2026, see [test results](docs/phase-0-results.md)); history import and search are tested end to end locally and awaiting a live import.
+> **Status:** v1.1 — deployed and working as a Claude custom connector. Text, link, image, edit, delete, list, comment and reaction are verified live through Claude (Nov 14, 2026, see [test results](docs/phase-0-results.md)). History import, carousels (PDF), multi-image posts and scheduling are unit-tested and awaiting their first live run.
 >
 > Not affiliated with, endorsed by, or sponsored by LinkedIn Corporation. LinkedIn is a trademark of LinkedIn Corporation.
 
@@ -23,6 +23,9 @@ postline-mcp is built on three rules:
 | Capability | Status | Why |
 |---|---|---|
 | Publish a post (text, link card, or one image) to your profile | ✅ Verified live | Self-serve `w_member_social` permission |
+| Publish a carousel (PDF document post) to your profile | 🧪 Built, awaiting live check | Same permission, via LinkedIn's `/rest/documents` upload |
+| Publish 2–20 images in one post | 🧪 Built, awaiting live check | Same permission, `multiImage` content |
+| Schedule posts, list and cancel them | 🧪 Built, awaiting live check | LinkedIn's API has no scheduling, so your Worker publishes them with a cron trigger |
 | Comment on / react to a post (by link) | ✅ Verified live | Same permission, via LinkedIn's `/v2` endpoints (the newer `/rest` ones are partner-only for these) |
 | Delete your own post | ✅ Verified | Same permission |
 | Edit your own post's text (in place, keeps likes and comments) | ✅ Verified | Same permission; `PARTIAL_UPDATE` on `/rest/posts` |
@@ -30,6 +33,7 @@ postline-mcp is built on three rules:
 | Import your post and article history and search it | ✅ Built | From LinkedIn's "Get a copy of your data" export (`Shares.csv` and `Articles/`), via a one-time upload link |
 | Read your feed, others' posts, comments, analytics | ❌ Not possible | `r_member_social` is closed by LinkedIn |
 | Post as a Company Page | ❌ Not in v1 | Requires LinkedIn partner approval |
+| Polls, articles, newsletters, live events | ❌ Not possible | Not offered in LinkedIn's self-serve API |
 | Read your data via the DMA Portability API | ❌ EU/EEA/Swiss members only | LinkedIn restricts it by profile location |
 
 ## How it works
@@ -43,7 +47,7 @@ flowchart TB
         direction TB
         index["index.ts<br/><i>front door and routing</i>"]
         handler["linkedin-handler.ts<br/><i>sign-in pages</i>"]
-        tools["tools.ts<br/><i>the 8 tools</i>"]
+        tools["tools.ts<br/><i>the 15 tools</i>"]
         li["linkedin.ts<br/><i>calls LinkedIn's API</i>"]
         store["store.ts<br/><i>drafts and post records</i>"]
         index --> handler
@@ -120,8 +124,12 @@ sequenceDiagram
 | Tool | What it does | Changes LinkedIn? |
 |---|---|---|
 | `get_me` | Which account is connected and when the sign-in expires | No |
-| `draft_post` | Prepares a post and returns an exact preview and a `draft_id` | No |
+| `draft_post` | Prepares a post (text, link card, 1 image, 2–20 images, or a PDF carousel) and returns an exact preview and a `draft_id` | No |
 | `publish_post` | Publishes a draft, only after you approve the preview | Yes |
+| `schedule_post` | Schedules an approved draft for a set time; images and PDF are frozen as previewed | Later, at that time |
+| `list_scheduled_posts` | Lists scheduled posts, soonest first, with any error | No |
+| `cancel_scheduled_post` | Cancels a scheduled post and deletes what it stored | No |
+| `create_pdf_upload_link` | One-time upload link (15 min) for a carousel PDF | No |
 | `edit_post` | Replaces a post's text in place (likes and comments kept) | Yes |
 | `delete_post` | Deletes one of your posts | Yes |
 | `list_my_posts` | Lists your posts: made through postline, plus imported history | No |
@@ -156,6 +164,43 @@ sequenceDiagram
 The file is parsed in your browser, not on the server: a free-plan Worker gets about 10 ms of CPU per request, and parsing a large export takes longer. To get the export: LinkedIn → Settings & Privacy → Data privacy → **Get a copy of your data**. If **Posts** isn't offered on its own, choose **Download larger data archive** (up to 24 hours); **Articles** alone arrives within minutes.
 
 Text is escaped for LinkedIn's formatting rules, so brackets, asterisks and underscores publish exactly as written, and `#hashtags` become real hashtags.
+
+### Carousels (PDF document posts)
+
+LinkedIn shows a PDF as a swipeable carousel, one slide per page. Ask Claude for *"a PDF upload link"*, open it, and choose the PDF (up to 20 MB). The page shows an `upload_id`; Claude passes it to `draft_post` as `document: { upload_id, title }`. A PDF at a public https URL works too: `document: { url, title }`.
+
+The PDF is kept in your Worker's KV until the post is published or cancelled (at most 60 days). LinkedIn processes an uploaded PDF before a post can use it, so postline retries the post a few times (2, 4 and 8 seconds) if LinkedIn isn't ready yet.
+
+### Scheduling
+
+LinkedIn's API can only publish *now* (`lifecycleState` must be `PUBLISHED`), so scheduling happens in your Worker:
+
+```mermaid
+sequenceDiagram
+    actor You
+    participant C as Claude
+    participant W as Your Worker
+    participant KV as Cloudflare KV
+    participant L as LinkedIn
+    You->>C: "Schedule this for Tuesday 8:30am"
+    C->>W: draft_post(...)
+    W-->>C: Preview + draft_id
+    C-->>You: Shows exact preview and the time
+    You->>C: "Yes, schedule it"
+    C->>W: schedule_post(draft_id, publish_at)
+    W->>KV: Save post, frozen images/PDF, encrypted token
+    Note over W: Cron trigger, every 5 minutes
+    W->>KV: List due posts
+    W->>L: Upload media, POST /rest/posts
+    W->>KV: Save post record, delete scheduled data
+```
+
+- **You approve at scheduling time.** Nobody confirms again when it publishes, so `schedule_post` shows the exact preview and Claude is told to schedule only after you approve both the post and the time. Images and the PDF are saved as they were previewed.
+- **Times need a UTC offset** (`2026-11-17T08:30:00-05:00`), at least 10 minutes ahead and at most 90 days. Posts go out within 5 minutes of their time.
+- **Sign-in expiry:** a post can only be scheduled up to the day before your LinkedIn sign-in expires (about 60 days). Reconnect to extend it.
+- **Failures:** temporary LinkedIn errors (429, 5xx) are retried on the next two runs; anything else marks the post `FAILED` with the reason, visible in `list_scheduled_posts`. Cancel it to clear it.
+- **Your token:** a scheduled post carries an encrypted copy of your LinkedIn token (AES-256-GCM, key derived from `COOKIE_ENCRYPTION_KEY`), deleted with the post. See [SECURITY.md](SECURITY.md).
+- **Free plan:** the cron runs 288 times a day and makes one KV list call each, inside the free plan's 1,000 lists a day.
 
 ## Deploy your own (free)
 
@@ -240,6 +285,8 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the code fits together 
 - [x] **CI/CD** — GitHub Actions: checks on every push, automatic deploy from `main`
 - [x] **Phase 3** — Import history from LinkedIn's data export, `search_my_posts` for writing in your voice
 - [ ] **v1.0 release** — after a live import of a real export
+- [x] **v1.1** — carousels (PDF), multi-image posts, scheduling (built and unit-tested)
+- [ ] **v1.1 live checks** — document post, multi-image post, a scheduled post published by the cron
 
 ## License
 
