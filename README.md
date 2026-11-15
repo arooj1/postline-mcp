@@ -4,7 +4,7 @@
 
 An open-source MCP connector that lets Claude draft, publish, edit and delete posts on **your own** LinkedIn profile — using only LinkedIn's official API.
 
-> **Status:** v1.1 — deployed and working as a Claude custom connector. Text, link, image, edit, delete, list, comment and reaction are verified live through Claude (Nov 14, 2026, see [test results](docs/phase-0-results.md)). History import, carousels (PDF), multi-image posts and scheduling are unit-tested and awaiting their first live run.
+> **Status:** v1.1 — deployed and working as a Claude custom connector. Text, link, image, carousel (PDF), multi-image, scheduling, edit, delete, list, comment and reaction are verified live through Claude (Nov 14, 2026, see [test results](docs/phase-0-results.md)). History import is unit-tested and awaiting its first live run.
 >
 > Not affiliated with, endorsed by, or sponsored by LinkedIn Corporation. LinkedIn is a trademark of LinkedIn Corporation.
 
@@ -286,7 +286,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the code fits together 
 - [x] **Phase 3** — Import history from LinkedIn's data export, `search_my_posts` for writing in your voice
 - [ ] **v1.0 release** — after a live import of a real export
 - [x] **v1.1** — carousels (PDF), multi-image posts, scheduling (built and unit-tested)
-- [ ] **v1.1 live checks** — document post, multi-image post, a scheduled post published by the cron
+- [x] **v1.1 live checks** — document post, multi-image post, a scheduled post published by the cron, and a cancelled one — all verified live (Nov 14, 2026)
 
 ## License
 
