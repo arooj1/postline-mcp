@@ -11,7 +11,7 @@ When you connect your LinkedIn account, your copy of postline-mcp receives:
 - **Your basic profile** (name, profile photo, LinkedIn member ID), through the `openid` and `profile` permissions, to identify you as the author of posts.
 - **An access token** that lets it publish, edit, comment and react on your behalf, through the `w_member_social` permission.
 - **A record of posts you create through it** (post ID, text, date), so you can list, edit and delete them later.
-- **Carousel PDFs and scheduled posts, only if you use them.** A PDF you upload, and a scheduled post's text, images, PDF and an encrypted copy of your token, are kept until the post is published or cancelled (PDFs at most 60 days).
+- **Uploads and scheduled posts, only if you use them.** A PDF or image you upload, and a scheduled post's text, images, PDF and an encrypted copy of your token, are kept until the post is published or cancelled (uploads at most 60 days; images uploaded for a scheduled post are deleted once they are saved with it).
 - **Your post and article history, only if you import it** (date, title, text, link, attached URL, visibility) from your own LinkedIn data export. The export file is read in your browser; only those post fields are sent to your deployment. Other files in the export (connections, messages and so on) are never read or uploaded.
 
 ## Where it is stored
