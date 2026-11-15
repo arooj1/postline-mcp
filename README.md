@@ -4,7 +4,7 @@
 
 An open-source MCP connector that lets Claude draft, publish, edit and delete posts on **your own** LinkedIn profile — using only LinkedIn's official API.
 
-> **Status:** v1.1 — deployed and working as a Claude custom connector. Text, link, image, carousel (PDF), multi-image, scheduling, edit, delete, list, comment and reaction are verified live through Claude (Nov 14, 2026, see [test results](docs/phase-0-results.md)). History import and image uploads are unit-tested and awaiting their first live run.
+> **Status:** v1.1 — deployed and working as a Claude custom connector. Text, link, image, image upload, carousel (PDF), multi-image, scheduling, edit, delete, list, comment and reaction are verified live through Claude (Nov 14, 2026, see [test results](docs/phase-0-results.md)). History import is unit-tested and awaiting its first live run.
 >
 > Not affiliated with, endorsed by, or sponsored by LinkedIn Corporation. LinkedIn is a trademark of LinkedIn Corporation.
 
@@ -25,7 +25,7 @@ postline-mcp is built on three rules:
 | Publish a post (text, link card, or one image) to your profile | ✅ Verified live | Self-serve `w_member_social` permission |
 | Publish a carousel (PDF document post) to your profile | ✅ Verified live | Same permission, via LinkedIn's `/rest/documents` upload |
 | Publish 2–20 images in one post | ✅ Verified live | Same permission, `multiImage` content |
-| Upload post images from your computer (no public URL needed) | 🧪 Built, awaiting live check | An upload link to your own Worker, like the PDF one |
+| Upload post images from your computer (no public URL needed) | ✅ Verified live | An upload link to your own Worker, like the PDF one |
 | Schedule posts, list and cancel them | ✅ Verified live | LinkedIn's API has no scheduling, so your Worker publishes them with a cron trigger |
 | Comment on / react to a post (by link) | ✅ Verified live | Same permission, via LinkedIn's `/v2` endpoints (the newer `/rest` ones are partner-only for these) |
 | Delete your own post | ✅ Verified | Same permission |

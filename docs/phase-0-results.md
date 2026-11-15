@@ -42,3 +42,15 @@ Not yet verified live: link cards, image posts, `comment_on_post`, `react_to_pos
 Finding: for self-serve apps, LinkedIn treats the versioned `/rest` comment and reaction endpoints as Community Management (partner) APIs. The unversioned `/v2` endpoints accept the same `w_member_social` permission. Posts, edits, deletes and images work on `/rest`.
 
 All 8 tools are now verified live.
+
+## Image upload live check — November 14, 2026
+
+| Tool | Result |
+|---|---|
+| `create_image_upload_link` | PASS: link opened in the browser, one PNG (0.2 MB) uploaded, `upload_id` returned |
+| `draft_post` with `image.upload_id` (connections only) | PASS: preview showed the uploaded file name, size and alt text |
+| `publish_post` | PASS: image rendered on LinkedIn; audience shown as Connections |
+| `list_my_posts` | PASS: new post listed first |
+| `delete_post` | PASS: removed from LinkedIn |
+
+Image uploads from the user's computer are now verified live.
