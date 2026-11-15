@@ -4,7 +4,7 @@
 
 An open-source MCP connector that lets Claude draft, publish, edit and delete posts on **your own** LinkedIn profile — using only LinkedIn's official API.
 
-> **Status:** v1.1 — deployed and working as a Claude custom connector. Text, link, image, carousel (PDF), multi-image, scheduling, edit, delete, list, comment and reaction are verified live through Claude (Nov 14, 2026, see [test results](docs/phase-0-results.md)). History import is unit-tested and awaiting its first live run.
+> **Status:** v1.1 — deployed and working as a Claude custom connector. Text, link, image, carousel (PDF), multi-image, scheduling, edit, delete, list, comment and reaction are verified live through Claude (Nov 14, 2026, see [test results](docs/phase-0-results.md)). History import and image uploads are unit-tested and awaiting their first live run.
 >
 > Not affiliated with, endorsed by, or sponsored by LinkedIn Corporation. LinkedIn is a trademark of LinkedIn Corporation.
 
@@ -25,6 +25,7 @@ postline-mcp is built on three rules:
 | Publish a post (text, link card, or one image) to your profile | ✅ Verified live | Self-serve `w_member_social` permission |
 | Publish a carousel (PDF document post) to your profile | ✅ Verified live | Same permission, via LinkedIn's `/rest/documents` upload |
 | Publish 2–20 images in one post | ✅ Verified live | Same permission, `multiImage` content |
+| Upload post images from your computer (no public URL needed) | 🧪 Built, awaiting live check | An upload link to your own Worker, like the PDF one |
 | Schedule posts, list and cancel them | ✅ Verified live | LinkedIn's API has no scheduling, so your Worker publishes them with a cron trigger |
 | Comment on / react to a post (by link) | ✅ Verified live | Same permission, via LinkedIn's `/v2` endpoints (the newer `/rest` ones are partner-only for these) |
 | Delete your own post | ✅ Verified | Same permission |
@@ -47,7 +48,7 @@ flowchart TB
         direction TB
         index["index.ts<br/><i>front door and routing</i>"]
         handler["linkedin-handler.ts<br/><i>sign-in pages</i>"]
-        tools["tools.ts<br/><i>the 15 tools</i>"]
+        tools["tools.ts<br/><i>the 16 tools</i>"]
         li["linkedin.ts<br/><i>calls LinkedIn's API</i>"]
         store["store.ts<br/><i>drafts and post records</i>"]
         index --> handler
@@ -130,6 +131,7 @@ sequenceDiagram
 | `list_scheduled_posts` | Lists scheduled posts, soonest first, with any error | No |
 | `cancel_scheduled_post` | Cancels a scheduled post and deletes what it stored | No |
 | `create_pdf_upload_link` | One-time upload link (15 min) for a carousel PDF | No |
+| `create_image_upload_link` | Upload link (15 min, up to 20 images) for post images, so they don't need a public URL | No |
 | `edit_post` | Replaces a post's text in place (likes and comments kept) | Yes |
 | `delete_post` | Deletes one of your posts | Yes |
 | `list_my_posts` | Lists your posts: made through postline, plus imported history | No |

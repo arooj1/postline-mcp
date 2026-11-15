@@ -2,6 +2,16 @@
 
 All notable changes to postline-mcp. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] — 2026-11-15
+
+### Added
+- **Image upload link:** `create_image_upload_link` issues a 15-minute page for uploading 1–20 post images (JPEG, PNG or GIF, ≤ 8 MB each, typed by file signature). Each image gets an `upload_id`; images are kept in KV until the post is published or scheduled, at most 60 days.
+- `draft_post`: `image` and each entry of `images` take `upload_id` as an alternative to `url`, and uploaded and URL images can be mixed. Previews name uploaded images by file name.
+
+### Changed
+- Scheduling an uploaded image saves it with the scheduled post, then deletes the upload.
+- README: 16 tools; new capability row marked "awaiting live check". SECURITY.md and PRIVACY.md cover image uploads.
+
 ## [1.1.0] — 2026-11-15
 
 ### Added

@@ -10,10 +10,26 @@
 import type { AuthRequest, OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import { Hono } from "hono";
 import { IMPORT_LIMITS, sanitizeImportedPosts } from "./importer";
-import { IMPORT_PAGE_HEADERS, renderImportExpired, renderImportPage, renderPdfUploadExpired, renderPdfUploadPage } from "./import-page";
+import {
+	IMPORT_PAGE_HEADERS,
+	renderImageUploadExpired,
+	renderImageUploadPage,
+	renderImportExpired,
+	renderImportPage,
+	renderPdfUploadExpired,
+	renderPdfUploadPage,
+} from "./import-page";
 import { LinkedInClient } from "./linkedin";
-import { consumeImportTicket, consumePdfUploadTicket, readImportTicket, readPdfUploadTicket, Store } from "./store";
-import { checkPdf, MAX_PDF_BYTES, type Props } from "./tools";
+import {
+	consumeImportTicket,
+	consumePdfUploadTicket,
+	readImageUploadTicket,
+	readImportTicket,
+	readPdfUploadTicket,
+	recordImageUpload,
+	Store,
+} from "./store";
+import { checkImage, checkPdf, MAX_IMAGE_BYTES, MAX_PDF_BYTES, type Props } from "./tools";
 import {
 	addApprovedClient,
 	bindStateToSession,
@@ -233,16 +249,49 @@ app.post("/upload/:token", async (c) => {
 	return c.json({ upload_id: uploadId, file_name: fileName, size: bytes.byteLength });
 });
 
+// ---------- Image upload (link created by the create_image_upload_link tool; up to 20 images) ----------
+
+app.get("/upload-image/:token", async (c) => {
+	const ticket = await readImageUploadTicket(c.env.OAUTH_KV, c.req.param("token"));
+	const html = ticket ? renderImageUploadPage() : renderImageUploadExpired();
+	return new Response(html, { status: ticket ? 200 : 410, headers: IMPORT_PAGE_HEADERS });
+});
+
+app.post("/upload-image/:token", async (c) => {
+	const token = c.req.param("token");
+	const ticket = await readImageUploadTicket(c.env.OAUTH_KV, token);
+	if (!ticket) return c.json({ error: "This upload link has expired or was used up. Ask Claude for a new one." }, 410);
+
+	const origin = c.req.header("Origin");
+	if (origin && origin !== new URL(c.req.url).origin) return c.json({ error: "Cross-site upload refused." }, 403);
+	const length = Number(c.req.header("Content-Length") ?? 0);
+	if (length > MAX_IMAGE_BYTES) return c.json({ error: "That image is larger than 8 MB." }, 413);
+
+	let bytes: ArrayBuffer;
+	let contentType: string;
+	try {
+		bytes = await c.req.arrayBuffer();
+		// The type comes from the file's own signature, not the browser's header.
+		contentType = checkImage(bytes);
+	} catch (err) {
+		return c.json({ error: err instanceof Error ? err.message : "Invalid upload." }, 400);
+	}
+	const fileName = cleanFileName(c.req.header("X-File-Name"), "image");
+	const uploadId = await new Store(c.env.OAUTH_KV, ticket.memberId).saveUploadedImage(bytes, fileName, contentType);
+	await recordImageUpload(c.env.OAUTH_KV, token, ticket);
+	return c.json({ upload_id: uploadId, file_name: fileName, size: bytes.byteLength });
+});
+
 /** Keeps an uploaded file's name readable and harmless (it is only ever shown back as text). */
-export function cleanFileName(raw: string | undefined): string {
-	let name = "carousel.pdf";
+export function cleanFileName(raw: string | undefined, fallback = "carousel.pdf"): string {
+	let name = fallback;
 	try {
 		if (raw) name = decodeURIComponent(raw);
 	} catch {
 		// keep the default
 	}
 	name = name.replace(/[^\p{L}\p{N} ._()-]/gu, "").trim().slice(0, 120);
-	return name || "carousel.pdf";
+	return name || fallback;
 }
 
 function redirectToLinkedIn(request: Request, env: Env, stateToken: string, headers: Record<string, string> = {}) {

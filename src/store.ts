@@ -9,6 +9,8 @@
  *   import:<token>              -> ImportTicket (one-time upload link, expires after 15 minutes)
  *   pdfupload:<token>           -> ImportTicket (one-time PDF upload link, expires after 15 minutes)
  *   doc:<memberId>:<docId>      -> PDF bytes    (uploaded carousel; metadata = DocumentMeta; expires after 60 days)
+ *   imgupload:<token>           -> ImageUploadTicket (one-time image upload link, up to 20 images, expires after 15 minutes)
+ *   upimg:<memberId>:<id>       -> image bytes  (uploaded image; metadata = UploadedImageMeta; expires after 60 days)
  *   sched:<memberId>:<id>       -> ScheduledPost (metadata = ScheduleMeta, so the publisher lists due posts in one call)
  *   media:<memberId>:<id>:<n>   -> image bytes  (images of a scheduled post, frozen when it was scheduled)
  */
@@ -62,6 +64,39 @@ export async function consumePdfUploadTicket(kv: KVNamespace, token: string): Pr
 	await kv.delete(`pdfupload:${token}`);
 }
 
+/** Most images one image upload link accepts (LinkedIn's limit for one post). */
+export const MAX_IMAGES_PER_LINK = 20;
+
+export interface ImageUploadTicket extends ImportTicket {
+	/** Images uploaded through this link so far. */
+	count: number;
+}
+
+/** One link for uploading 1–20 images for a post. Each image is its own request, so the link counts them. */
+export async function createImageUploadTicket(kv: KVNamespace, memberId: string): Promise<string> {
+	const token = randomToken();
+	const ticket: ImageUploadTicket = { memberId, createdAt: new Date().toISOString(), count: 0 };
+	await kv.put(`imgupload:${token}`, JSON.stringify(ticket), { expirationTtl: IMPORT_TTL_SECONDS });
+	return token;
+}
+
+export async function readImageUploadTicket(kv: KVNamespace, token: string): Promise<ImageUploadTicket | null> {
+	if (!/^[A-Za-z0-9_-]{20,64}$/.test(token)) return null;
+	return kv.get<ImageUploadTicket>(`imgupload:${token}`, "json");
+}
+
+/** Counts one upload; the link is used up after MAX_IMAGES_PER_LINK. It keeps its original expiry. */
+export async function recordImageUpload(kv: KVNamespace, token: string, ticket: ImageUploadTicket): Promise<void> {
+	const count = ticket.count + 1;
+	const secondsLeft = Math.floor((Date.parse(ticket.createdAt) + IMPORT_TTL_SECONDS * 1000 - Date.now()) / 1000);
+	if (count >= MAX_IMAGES_PER_LINK || secondsLeft <= 0) {
+		await kv.delete(`imgupload:${token}`);
+		return;
+	}
+	// KV's shortest expiry is 60 seconds.
+	await kv.put(`imgupload:${token}`, JSON.stringify({ ...ticket, count }), { expirationTtl: Math.max(60, secondsLeft) });
+}
+
 function randomToken(): string {
 	const bytes = crypto.getRandomValues(new Uint8Array(24));
 	return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -74,15 +109,17 @@ export interface Draft {
 	text: string;
 	visibility: Visibility;
 	article?: ArticleInput;
-	image?: { url: string; altText: string };
-	/** 2–20 images, each from a public https URL. */
-	images?: Array<{ url: string; altText: string }>;
+	image?: ImageSource;
+	/** 2–20 images, each uploaded through an image upload link or from a public https URL. */
+	images?: ImageSource[];
 	/** A carousel PDF: one uploaded through a PDF upload link, or a public https URL. */
 	document?: DocumentSource;
 	createdAt: string;
 }
 
 export type DocumentSource = { title: string } & ({ uploadId: string; url?: undefined } | { url: string; uploadId?: undefined });
+
+export type ImageSource = { altText: string } & ({ uploadId: string; url?: undefined } | { url: string; uploadId?: undefined });
 
 export type PostKind = "text" | "article" | "image" | "images" | "document";
 
@@ -107,6 +144,13 @@ export const DOCUMENT_TTL_SECONDS = 60 * 24 * 60 * 60;
 export interface DocumentMeta {
 	fileName: string;
 	size: number;
+	createdAt: string;
+}
+
+export interface UploadedImageMeta {
+	fileName: string;
+	size: number;
+	contentType: string;
 	createdAt: string;
 }
 
@@ -144,6 +188,7 @@ export interface ScheduleMeta {
 const postKey = (memberId: string, urn: string) => `post:${memberId}:${urn}`;
 const draftKey = (memberId: string, id: string) => `draft:${memberId}:${id}`;
 const docKey = (memberId: string, id: string) => `doc:${memberId}:${id}`;
+const upimgKey = (memberId: string, id: string) => `upimg:${memberId}:${id}`;
 export const schedKey = (memberId: string, id: string) => `sched:${memberId}:${id}`;
 const mediaKey = (memberId: string, id: string, n: number) => `media:${memberId}:${id}:${n}`;
 
@@ -238,6 +283,29 @@ export class Store {
 
 	async deleteDocument(id: string): Promise<void> {
 		await this.kv.delete(docKey(this.memberId, id));
+	}
+
+	// ---------- Uploaded images ----------
+
+	async saveUploadedImage(bytes: ArrayBuffer, fileName: string, contentType: string): Promise<string> {
+		const id = crypto.randomUUID();
+		const meta: UploadedImageMeta = { fileName, size: bytes.byteLength, contentType, createdAt: new Date().toISOString() };
+		await this.kv.put(upimgKey(this.memberId, id), bytes, { metadata: meta, expirationTtl: DOCUMENT_TTL_SECONDS });
+		return id;
+	}
+
+	async getUploadedImage(id: string): Promise<{ bytes: ArrayBuffer; meta: UploadedImageMeta } | null> {
+		const { value, metadata } = await this.kv.getWithMetadata<UploadedImageMeta>(upimgKey(this.memberId, id), "arrayBuffer");
+		return value && metadata ? { bytes: value, meta: metadata } : null;
+	}
+
+	async getUploadedImageMeta(id: string): Promise<UploadedImageMeta | null> {
+		const { metadata } = await this.kv.getWithMetadata<UploadedImageMeta>(upimgKey(this.memberId, id), "arrayBuffer");
+		return metadata ?? null;
+	}
+
+	async deleteUploadedImage(id: string): Promise<void> {
+		await this.kv.delete(upimgKey(this.memberId, id));
 	}
 
 	// ---------- Scheduled posts ----------

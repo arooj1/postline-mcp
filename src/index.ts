@@ -8,6 +8,7 @@ import { Store } from "./store";
 import {
 	cancelScheduledPost,
 	commentOnPost,
+	createImageUploadLink,
 	createImportLink,
 	createPdfUploadLink,
 	deleteImportedHistory,
@@ -27,7 +28,7 @@ import {
 	type ToolContext,
 } from "./tools";
 
-const VERSION = "1.1.0";
+const VERSION = "1.2.0";
 
 type TextResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
 
@@ -135,6 +136,18 @@ function createServer() {
 			annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
 		},
 		async () => run(() => createPdfUploadLink(ctx)),
+	);
+
+	server.registerTool(
+		"create_image_upload_link",
+		{
+			title: "Upload post images",
+			description:
+				"Creates an upload link (valid 15 minutes, up to 20 images) where the user uploads JPEG, PNG or GIF images for a post. The page shows one upload_id per image; pass them to draft_post as image.upload_id or images[].upload_id. Give the link to the user; they open it in a browser.",
+			inputSchema: schemas.create_image_upload_link,
+			annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+		},
+		async () => run(() => createImageUploadLink(ctx)),
 	);
 
 	server.registerTool(

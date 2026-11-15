@@ -17,9 +17,12 @@ import {
 import { decryptToken, encryptToken } from "./crypto";
 import {
 	createImportTicket,
+	createImageUploadTicket,
 	createPdfUploadTicket,
+	MAX_IMAGES_PER_LINK,
 	Store,
 	type Draft,
+	type ImageSource,
 	type PostKind,
 	type PostRecord,
 	type ScheduledPost,
@@ -80,6 +83,12 @@ export function assertTokenValid(ctx: ToolContext): void {
 
 // ---------- Schemas ----------
 
+const imageInput = z.object({
+	upload_id: z.string().uuid().optional().describe("The upload_id of an image the user uploaded through create_image_upload_link."),
+	url: z.string().url().optional().describe("Or: a public https URL of a JPEG, PNG or GIF, up to 8 MB."),
+	alt_text: z.string().min(1).max(300).describe("Describes the image for screen readers."),
+});
+
 export const schemas = {
 	get_me: z.object({}),
 	draft_post: z.object({
@@ -100,24 +109,17 @@ export const schemas = {
 			})
 			.optional()
 			.describe("Attach a link card. Can't be combined with an image."),
-		image: z
-			.object({
-				url: z.string().url().describe("A public https URL of a JPEG, PNG or GIF, up to 8 MB."),
-				alt_text: z.string().min(1).max(300).describe("Describes the image for screen readers."),
-			})
+		image: imageInput
 			.optional()
-			.describe("Attach one image. Can't be combined with a link, images or a document."),
+			.describe("Attach one image. Give upload_id or url, not both. Can't be combined with a link, images or a document."),
 		images: z
-			.array(
-				z.object({
-					url: z.string().url().describe("A public https URL of a JPEG, PNG or GIF, up to 8 MB."),
-					alt_text: z.string().min(1).max(300).describe("Describes the image for screen readers."),
-				}),
-			)
+			.array(imageInput)
 			.min(2)
 			.max(20)
 			.optional()
-			.describe("Attach 2–20 images, shown as a grid. Can't be combined with a link, a single image or a document."),
+			.describe(
+				"Attach 2–20 images, shown as a grid, in this order. Each gives upload_id or url. Can't be combined with a link, a single image or a document.",
+			),
 		document: z
 			.object({
 				upload_id: z
@@ -163,6 +165,7 @@ export const schemas = {
 		confirm: z.literal(true).describe("Must be true. Deletes the imported history from postline (not from LinkedIn)."),
 	}),
 	create_pdf_upload_link: z.object({}),
+	create_image_upload_link: z.object({}),
 	schedule_post: z.object({
 		draft_id: z.string().uuid().describe("The draft_id returned by draft_post."),
 		publish_at: z
@@ -200,8 +203,12 @@ export async function draftPost(ctx: ToolContext, input: In<"draft_post">): Prom
 	const attachments = [input.link, input.image, input.images, input.document].filter(Boolean).length;
 	if (attachments > 1) throw new Error("A post can have one kind of attachment: a link, an image, 2–20 images, or a PDF document.");
 	if (input.link && !input.link.url.startsWith("https://")) throw new Error("Link URLs must start with https://.");
-	if (input.image && !input.image.url.startsWith("https://")) throw new Error("Image URLs must start with https://.");
-	if (input.images?.some((i) => !i.url.startsWith("https://"))) throw new Error("Image URLs must start with https://.");
+	const image = input.image ? await toImageSource(ctx, input.image) : undefined;
+	const images = input.images ? await Promise.all(input.images.map((i) => toImageSource(ctx, i))) : undefined;
+	const uploadIds = (images ?? []).map((i) => i.uploadId).filter(Boolean);
+	if (new Set(uploadIds).size < uploadIds.length) {
+		throw new Error("The same uploaded image is listed twice. Each upload_id can be used once per post.");
+	}
 	let document: Draft["document"];
 	if (input.document) {
 		const { upload_id, url, title } = input.document;
@@ -220,8 +227,8 @@ export async function draftPost(ctx: ToolContext, input: In<"draft_post">): Prom
 		text: input.text,
 		visibility: input.visibility,
 		article: input.link,
-		image: input.image ? { url: input.image.url, altText: input.image.alt_text } : undefined,
-		images: input.images?.map((i) => ({ url: i.url, altText: i.alt_text })),
+		image,
+		images,
 		document,
 	});
 	return [
@@ -239,10 +246,48 @@ export async function draftPost(ctx: ToolContext, input: In<"draft_post">): Prom
 	].join("\n");
 }
 
+async function toImageSource(ctx: ToolContext, input: z.infer<typeof imageInput>): Promise<ImageSource> {
+	const { upload_id, url, alt_text } = input;
+	if (!!upload_id === !!url) throw new Error("For each image, give either upload_id (from create_image_upload_link) or url, not both.");
+	if (upload_id) {
+		if (!(await ctx.store.getUploadedImageMeta(upload_id))) {
+			throw new Error("That uploaded image wasn't found. It may have expired or been used already. Create a new image upload link.");
+		}
+		return { uploadId: upload_id, altText: alt_text };
+	}
+	if (!url!.startsWith("https://")) throw new Error("Image URLs must start with https://.");
+	return { url: url!, altText: alt_text };
+}
+
+/** How an image is named in previews: its uploaded file name, or its URL. */
+async function imageLabel(ctx: ToolContext, img: ImageSource): Promise<string> {
+	if (!img.uploadId) return img.url!;
+	const meta = await ctx.store.getUploadedImageMeta(img.uploadId);
+	return meta ? `uploaded ${meta.fileName}, ${(meta.size / 1024 / 1024).toFixed(1)} MB` : "uploaded image";
+}
+
+/** The bytes of a draft's image: from the upload store, or downloaded from its URL. */
+async function loadDraftImage(ctx: ToolContext, img: ImageSource): Promise<{ bytes: ArrayBuffer; contentType: string }> {
+	if (img.uploadId) {
+		const found = await ctx.store.getUploadedImage(img.uploadId);
+		if (!found) throw new Error("An uploaded image has expired or was already used. Create a new image upload link and draft again.");
+		return { bytes: found.bytes, contentType: found.meta.contentType };
+	}
+	return downloadImage(img.url!, ctx.fetchImpl);
+}
+
+async function deleteUploadedImages(ctx: ToolContext, d: Pick<Draft, "image" | "images">): Promise<void> {
+	const ids = [d.image, ...(d.images ?? [])].map((i) => i?.uploadId).filter((id): id is string => !!id);
+	await Promise.all(ids.map((id) => ctx.store.deleteUploadedImage(id)));
+}
+
 async function describeAttachment(ctx: ToolContext, d: Pick<Draft, "article" | "image" | "images" | "document">): Promise<string> {
 	if (d.article) return `Link card: ${d.article.title} (${d.article.url})`;
-	if (d.image) return `Image: ${d.image.url} (alt text: "${d.image.altText}")`;
-	if (d.images) return [`Images (${d.images.length}, in this order):`, ...d.images.map((i, n) => `  ${n + 1}. ${i.url} (alt text: "${i.altText}")`)].join("\n");
+	if (d.image) return `Image: ${await imageLabel(ctx, d.image)} (alt text: "${d.image.altText}")`;
+	if (d.images) {
+		const labels = await Promise.all(d.images.map((i) => imageLabel(ctx, i)));
+		return [`Images (${d.images.length}, in this order):`, ...d.images.map((i, n) => `  ${n + 1}. ${labels[n]} (alt text: "${i.altText}")`)].join("\n");
+	}
 	if (d.document) {
 		if (d.document.uploadId) {
 			const meta = await ctx.store.getDocumentMeta(d.document.uploadId);
@@ -265,12 +310,12 @@ export async function publishPost(ctx: ToolContext, input: In<"publish_post">): 
 	const owner = authorUrn(ctx.props);
 	const content: Partial<CreatePostInput> = {};
 	if (draft.image) {
-		const { bytes, contentType } = await downloadImage(draft.image.url, ctx.fetchImpl);
+		const { bytes, contentType } = await loadDraftImage(ctx, draft.image);
 		content.image = { urn: await ctx.linkedin.uploadImage(owner, bytes, contentType), altText: draft.image.altText };
 	} else if (draft.images) {
 		content.images = [];
 		for (const img of draft.images) {
-			const { bytes, contentType } = await downloadImage(img.url, ctx.fetchImpl);
+			const { bytes, contentType } = await loadDraftImage(ctx, img);
 			content.images.push({ urn: await ctx.linkedin.uploadImage(owner, bytes, contentType), altText: img.altText });
 		}
 	} else if (draft.document) {
@@ -290,6 +335,7 @@ export async function publishPost(ctx: ToolContext, input: In<"publish_post">): 
 	await ctx.store.savePost(record);
 	await ctx.store.deleteDraft(draft.id);
 	if (draft.document?.uploadId) await ctx.store.deleteDocument(draft.document.uploadId);
+	await deleteUploadedImages(ctx, draft);
 	return `Published to LinkedIn.\nLink: ${record.url}\nPost ID: ${urn}`;
 }
 
@@ -409,6 +455,27 @@ export async function createPdfUploadLink(ctx: ToolContext): Promise<string> {
 	].join("\n");
 }
 
+export async function createImageUploadLink(ctx: ToolContext): Promise<string> {
+	if (!ctx.kv || !ctx.origin) throw new Error("Upload links aren't available on this deployment.");
+	const token = await createImageUploadTicket(ctx.kv, ctx.props.memberId);
+	return [
+		`Image upload link (expires in 15 minutes, up to ${MAX_IMAGES_PER_LINK} images): ${ctx.origin}/upload-image/${token}`,
+		"",
+		"Give the user this link. They open it in their browser and choose one or more images (JPEG, PNG or GIF, up to 8 MB each). The page shows one upload_id per image, in the order chosen.",
+		"Then call draft_post with image: { upload_id, alt_text } for one image, or images: [{ upload_id, alt_text }, …] for 2–20. Uploaded images are kept for 60 days, or until the post using them is published or scheduled.",
+	].join("\n");
+}
+
+/** Checks an uploaded image's size and file signature, and returns its media type. */
+export function checkImage(bytes: ArrayBuffer): string {
+	if (bytes.byteLength > MAX_IMAGE_BYTES) throw new Error("The image is larger than 8 MB.");
+	const b = new Uint8Array(bytes.slice(0, 4));
+	if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "image/jpeg";
+	if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return "image/png";
+	if (b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x38) return "image/gif";
+	throw new Error("That file isn't a JPEG, PNG or GIF.");
+}
+
 // ---------- Scheduling ----------
 
 /** Parses an ISO 8601 date-time that carries an explicit offset (Z or ±hh:mm). */
@@ -448,7 +515,7 @@ export async function schedulePost(ctx: ToolContext, input: In<"schedule_post">)
 		images = [];
 		try {
 			for (const [n, img] of sources.entries()) {
-				const { bytes, contentType } = await downloadImage(img.url, ctx.fetchImpl);
+				const { bytes, contentType } = await loadDraftImage(ctx, img);
 				await ctx.store.saveMedia(id, n, bytes);
 				images.push({ altText: img.altText, contentType });
 			}
@@ -488,6 +555,8 @@ export async function schedulePost(ctx: ToolContext, input: In<"schedule_post">)
 	};
 	await ctx.store.saveScheduled(post);
 	await ctx.store.deleteDraft(draft.id);
+	// The images are now frozen with the scheduled post, so the uploads aren't needed any more.
+	await deleteUploadedImages(ctx, draft);
 
 	return [
 		"SCHEDULED — not on LinkedIn yet.",

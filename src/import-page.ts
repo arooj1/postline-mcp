@@ -148,3 +148,56 @@ export function renderPdfUploadExpired(): string {
 	return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Link expired · postline</title><style>${STYLE}</style></head><body>
 <h1>This upload link has expired or was already used</h1><p>Ask Claude for a new one: <i>"create a PDF upload link"</i>.</p></body></html>`;
 }
+
+/** The upload page for 1–20 post images. Each image is sent as its own request; the server checks size and type. */
+export function renderImageUploadPage(): string {
+	return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Upload post images · postline</title><style>${STYLE}</style></head><body>
+<h1><img src="https://raw.githubusercontent.com/arooj1/postline-mcp/main/assets/logo.png" alt="">Upload post images</h1>
+<p class="muted">Choose 1–20 images for your LinkedIn post (JPEG, PNG or GIF, up to 8 MB each), in the order they should appear. They are stored only in your own postline deployment and deleted once the post is published or scheduled, or after 60 days. This link expires 15 minutes after it was created.</p>
+<label class="drop" id="drop"><input type="file" id="file" accept="image/jpeg,image/png,image/gif" multiple hidden><span id="pick">Choose or drop the images here</span></label>
+<button id="go" disabled>Upload</button>
+<div id="status" role="status"></div>
+<script>
+const fileInput = document.getElementById("file"), drop = document.getElementById("drop"), go = document.getElementById("go"),
+  status = document.getElementById("status"), pick = document.getElementById("pick");
+let chosen = [];
+function show(msg, cls) { status.textContent = msg; status.className = cls || ""; }
+function choose(list) {
+  chosen = Array.from(list || []);
+  pick.textContent = chosen.length ? chosen.map((f) => f.name).join(", ") : "Choose or drop the images here";
+  go.disabled = chosen.length === 0; show("");
+}
+fileInput.addEventListener("change", () => choose(fileInput.files));
+drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
+drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+drop.addEventListener("drop", (e) => { e.preventDefault(); drop.classList.remove("over"); choose(e.dataTransfer.files); });
+go.addEventListener("click", async () => {
+  if (chosen.length === 0) { show("Choose at least one image.", "err"); return; }
+  if (chosen.length > 20) { show("A post can have at most 20 images.", "err"); return; }
+  const big = chosen.find((f) => f.size > 8 * 1048576);
+  if (big) { show(big.name + " is larger than 8 MB.", "err"); return; }
+  go.disabled = true;
+  const done = [];
+  try {
+    for (const [i, f] of chosen.entries()) {
+      show("Uploading " + (i + 1) + " of " + chosen.length + "…");
+      const res = await fetch(location.pathname, { method: "POST", headers: { "Content-Type": f.type || "application/octet-stream", "X-File-Name": encodeURIComponent(f.name) }, body: f });
+      const out = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(f.name + ": " + (out.error || ("upload failed (HTTP " + res.status + ").")));
+      done.push((i + 1) + ". " + out.file_name + "\\n   upload_id: " + out.upload_id);
+    }
+    show("Uploaded " + done.length + " image" + (done.length === 1 ? "" : "s") + ", in this order:\\n\\n" + done.join("\\n") + "\\n\\nGo back to Claude and paste these, or just say \\"done\\".", "ok");
+  } catch (err) {
+    const msg = err && err.message ? err.message : String(err);
+    show((done.length ? "Uploaded so far:\\n" + done.join("\\n") + "\\n\\n" : "") + msg, "err");
+    go.disabled = false;
+  }
+});
+</script></body></html>`;
+}
+
+export function renderImageUploadExpired(): string {
+	return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Link expired · postline</title><style>${STYLE}</style></head><body>
+<h1>This upload link has expired or was used up</h1><p>Ask Claude for a new one: <i>"create an image upload link"</i>.</p></body></html>`;
+}
