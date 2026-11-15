@@ -446,10 +446,16 @@ export async function schedulePost(ctx: ToolContext, input: In<"schedule_post">)
 	const sources = draft.image ? [draft.image] : draft.images;
 	if (sources) {
 		images = [];
-		for (const [n, img] of sources.entries()) {
-			const { bytes, contentType } = await downloadImage(img.url, ctx.fetchImpl);
-			await ctx.store.saveMedia(id, n, bytes);
-			images.push({ altText: img.altText, contentType });
+		try {
+			for (const [n, img] of sources.entries()) {
+				const { bytes, contentType } = await downloadImage(img.url, ctx.fetchImpl);
+				await ctx.store.saveMedia(id, n, bytes);
+				images.push({ altText: img.altText, contentType });
+			}
+		} catch (err) {
+			// Don't leave half a post's images behind.
+			await ctx.store.deleteScheduled({ id, images } as ScheduledPost);
+			throw err;
 		}
 	}
 	let document: ScheduledPost["document"];

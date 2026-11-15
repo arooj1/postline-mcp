@@ -238,6 +238,31 @@ describe("schedule_post", () => {
 	});
 });
 
+describe("schedule_post cleanup", () => {
+	it("deletes already-saved images when a later image fails to download", async () => {
+		const responders = [
+			(c: RecordedCall) => (c.url.endsWith("/missing.png") ? new Response("nope", { status: 404 }) : undefined),
+			...linkedInResponders(),
+		];
+		const { ctx, kv } = setup(responders);
+		const id = draftIdFrom(
+			await draftPost(
+				ctx,
+				schemas.draft_post.parse({
+					text: "Two images",
+					images: [
+						{ url: "https://cdn.example.com/ok.png", alt_text: "ok" },
+						{ url: "https://cdn.example.com/missing.png", alt_text: "missing" },
+					],
+				}),
+			),
+		);
+		await expect(schedulePost(ctx, { draft_id: id, publish_at: "2026-11-17T13:30:00Z" })).rejects.toThrow(/HTTP 404/);
+		expect([...kv.data.keys()].some((k) => k.startsWith("media:") || k.startsWith("sched:"))).toBe(false);
+		expect(await ctx.store.getDraft(id)).not.toBeNull();
+	});
+});
+
 describe("publishDuePosts (the cron publisher)", () => {
 	async function scheduleOne(ctx: ToolContext, input: Record<string, unknown>, at = "2026-11-15T13:00:00Z") {
 		const id = draftIdFrom(await draftPost(ctx, schemas.draft_post.parse(input)));
