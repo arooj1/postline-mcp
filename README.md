@@ -1,8 +1,16 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/banner-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="assets/banner-light.png">
+  <img alt="postline-mcp: Claude drafts. You approve. Posts to your own LinkedIn profile, never without your OK." src="assets/banner-dark.png" width="100%">
+</picture>
+
 # postline-mcp
 
-[![CI](https://github.com/arooj1/postline-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/arooj1/postline-mcp/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![CI](https://github.com/arooj1/postline-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/arooj1/postline-mcp/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-FDE047?labelColor=111214)](LICENSE) [![Official LinkedIn API only](https://img.shields.io/badge/LinkedIn-official%20API%20only-FDE047?labelColor=111214)](#why-this-exists)
 
-An open-source MCP connector that lets Claude draft, publish, edit and delete posts on **your own** LinkedIn profile — using only LinkedIn's official API.
+I wanted Claude to post on my LinkedIn. I did not want to hand it my password.
+
+So I built postline-mcp: an open-source MCP connector that makes Claude your LinkedIn ghostwriter. It drafts, publishes, edits and deletes posts on **your own** profile, using only LinkedIn's official API. A good ghostwriter writes the words. You still sign them.
 
 > **Status:** v1.1 — deployed and working as a Claude custom connector. Text, link, image, image upload, carousel (PDF), multi-image, scheduling, edit, delete, list, comment and reaction are verified live through Claude (Nov 14, 2026, see [test results](docs/phase-0-results.md)). History import is unit-tested and awaiting its first live run.
 >
@@ -10,7 +18,9 @@ An open-source MCP connector that lets Claude draft, publish, edit and delete po
 
 ## Why this exists
 
-Several LinkedIn MCP servers already exist. Some drive your logged-in browser session or use your password, which breaks LinkedIn's User Agreement and can get your account restricted. Others only run locally in Claude Desktop.
+Several LinkedIn MCP servers already exist. Some drive your logged-in browser session or ask for your password. That breaks LinkedIn's User Agreement, and the prize for it is a restricted account. Others only run locally in Claude Desktop.
+
+I'll admit the browser route is tempting. It can do almost anything. It is also a ghostwriter holding your house keys.
 
 postline-mcp is built on three rules:
 
@@ -18,7 +28,11 @@ postline-mcp is built on three rules:
 2. **Honest scope.** The table below states exactly what LinkedIn allows. If LinkedIn doesn't allow it, this tool doesn't pretend to do it.
 3. **Nothing publishes without your OK.** Claude drafts, you preview, you confirm.
 
+It's not "AI that posts for you." It's "AI that drafts for you, and waits."
+
 ## What it can and can't do
+
+LinkedIn's self-serve API is a short list. Here it is in full, including the parts it says no to.
 
 | Capability | Status | Why |
 |---|---|---|
@@ -39,7 +53,7 @@ postline-mcp is built on three rules:
 
 ## How it works
 
-Three parties: Claude, **your own** Cloudflare Worker (this code), and LinkedIn. Claude never sees your LinkedIn token; it only holds a key to your Worker.
+Three parties: Claude, **your own** Cloudflare Worker (this code), and LinkedIn. Claude never sees your LinkedIn token. It only holds a key to your Worker: the ghostwriter gets a desk, not your wallet.
 
 ```mermaid
 flowchart TB
@@ -98,7 +112,7 @@ sequenceDiagram
 
 ### Publishing a post (two turns, on purpose)
 
-Claude can't publish in one step. `draft_post` changes nothing on LinkedIn. `publish_post` needs the `draft_id`, so Claude has to show you the preview first.
+Claude can't publish in one step, and that's the point. `draft_post` changes nothing on LinkedIn. `publish_post` needs the `draft_id`, so Claude has to show you the preview first. The ghostwriter hands you the page. You sign it.
 
 ```mermaid
 sequenceDiagram
@@ -143,7 +157,7 @@ sequenceDiagram
 
 ### Writing in your voice
 
-LinkedIn's API won't return your past posts, but LinkedIn's data export will. Ask Claude to *"import my LinkedIn history"*; it gives you a one-time link. Upload the export ZIP there. Your feed posts (`Shares.csv`) and long-form articles (`Articles/`) are imported; empty drafts are skipped. From then on Claude can call `search_my_posts` to read how you actually write before drafting something new, and to avoid repeating a post you've already made.
+A good ghostwriter reads your old work before writing anything new. LinkedIn's API won't return your past posts, but LinkedIn's data export will. Ask Claude to *"import my LinkedIn history"*; it gives you a one-time link. Upload the export ZIP there. Your feed posts (`Shares.csv`) and long-form articles (`Articles/`) are imported; empty drafts are skipped. From then on Claude can call `search_my_posts` to read how you actually write before drafting something new, and to avoid repeating a post you've already made.
 
 ```mermaid
 sequenceDiagram
@@ -175,7 +189,7 @@ The PDF is kept in your Worker's KV until the post is published or cancelled (at
 
 ### Scheduling
 
-LinkedIn's API can only publish *now* (`lifecycleState` must be `PUBLISHED`), so scheduling happens in your Worker:
+LinkedIn's API can only publish *now* (`lifecycleState` must be `PUBLISHED`), so scheduling happens in your Worker. Think of it as signing the letter today and dating it for Tuesday: you approve the exact post once, and your Worker sends it on time.
 
 ```mermaid
 sequenceDiagram
