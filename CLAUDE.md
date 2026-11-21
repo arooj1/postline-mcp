@@ -55,17 +55,8 @@ pages), `src/importer.ts` + `src/import-page.ts` (history import), `src/crypto.t
 Verified live through Claude on 2026-11-14: text, link, image, image upload, carousel (PDF),
 multi-image, scheduling, edit, delete, list, comment and reaction. History import is
 unit-tested and awaiting its first live run. Image upload (v1.2.0) was awaiting a live check
-at the last update. Decision: keep MIT and treat it mainly as a portfolio and consulting
-asset; a paid tool later stays possible but is not planned.
+at the last update.
 
-## Standing rules (all of Arooj's projects)
+## Keeping this file current
 
-- **Secrets** live only in GitHub Actions Secrets and variables or Cloudflare secrets, or a
-  git-ignored `.env`. Never in the repo, a log or a commit.
-- **Free tier only.** Do not add a paid service. The account's GitHub budgets are
-  deliberately $0 (usage blocks once the free allowance is used); do not suggest raising
-  them. Codespaces is not used: do not create codespaces or prebuilds.
-- **Working style.** Verify what is actually available before proposing, push back with
-  reasons instead of agreeing, and prefer quality over speed.
-- **Keep this file current.** When a decision, status or constraint changes, update this
-  CLAUDE.md in the same change.
+When a rule, layout or status changes, update this CLAUDE.md in the same change.
