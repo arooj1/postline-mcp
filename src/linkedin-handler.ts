@@ -26,6 +26,7 @@ import {
 	readImageUploadTicket,
 	readImportTicket,
 	readPdfUploadTicket,
+	readFeed,
 	recordImageUpload,
 	Store,
 } from "./store";
@@ -182,6 +183,19 @@ app.get("/callback", async (c) => {
 
 // ---------- One-time history import (link created by the create_import_link tool) ----------
 
+// Public website feed: the owner's public posts and articles as JSON, for their own website.
+// Off (404) unless PUBLIC_FEED_MEMBER_ID is set. One KV read per request; see feed.ts.
+app.get("/feed.json", async (c) => {
+	const memberId = c.env.PUBLIC_FEED_MEMBER_ID?.trim();
+	if (!memberId) return c.json({ error: "Not found." }, 404);
+	const feed = (await readFeed(c.env.OAUTH_KV, memberId)) ?? { updatedAt: null, articles: [], posts: [] };
+	return c.json(feed, 200, {
+		"Cache-Control": "public, max-age=300",
+		"Access-Control-Allow-Origin": "*",
+		"X-Content-Type-Options": "nosniff",
+	});
+});
+
 app.get("/import/:token", async (c) => {
 	const ticket = await readImportTicket(c.env.OAUTH_KV, c.req.param("token"));
 	const html = ticket ? renderImportPage() : renderImportExpired();
@@ -209,7 +223,7 @@ app.post("/import/:token", async (c) => {
 	}
 	if (posts.length === 0) return c.json({ error: "No valid posts in the upload." }, 400);
 
-	await new Store(c.env.OAUTH_KV, ticket.memberId).saveHistory(posts);
+	await new Store(c.env.OAUTH_KV, ticket.memberId, { publicFeedMemberId: c.env.PUBLIC_FEED_MEMBER_ID }).saveHistory(posts);
 	await consumeImportTicket(c.env.OAUTH_KV, token);
 	return c.json({
 		imported: posts.length,

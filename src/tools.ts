@@ -29,6 +29,7 @@ import {
 	type ScheduleMeta,
 } from "./store";
 import type { CreatePostInput } from "./linkedin";
+import { articleKey, type WebsiteArticle } from "./feed";
 
 /** What the OAuth flow stores for each signed-in member (encrypted by the OAuth provider). */
 export interface Props {
@@ -177,6 +178,27 @@ export const schemas = {
 	list_scheduled_posts: z.object({}),
 	cancel_scheduled_post: z.object({
 		scheduled_id: z.string().uuid().describe("The scheduled_id returned by schedule_post or list_scheduled_posts."),
+	}),
+	add_website_article: z.object({
+		url: z
+			.string()
+			.url()
+			.regex(/^https:\/\/(www\.)?linkedin\.com\/pulse\//i, "Must be a LinkedIn article link (https://www.linkedin.com/pulse/…).")
+			.describe("The article's LinkedIn link, https://www.linkedin.com/pulse/…"),
+		title: z.string().min(1).max(200).describe("The article's title, exactly as published."),
+		summary: z.string().min(1).max(300).describe("One or two sentences for the website card, in the user's voice. Show it to the user first."),
+		date: z
+			.string()
+			.regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD.")
+			.describe("Publish date, YYYY-MM-DD."),
+		label: z
+			.string()
+			.max(30)
+			.optional()
+			.describe("Short topic label in capitals for the card, e.g. \"AI GOVERNANCE\". Defaults to ARTICLE."),
+	}),
+	remove_website_article: z.object({
+		url: z.string().url().describe("The LinkedIn article link to take off the website feed."),
 	}),
 	react_to_post: z.object({
 		post: z.string().min(1).describe("Link to the post, or its urn:li:… ID."),
@@ -330,6 +352,7 @@ export async function publishPost(ctx: ToolContext, input: In<"publish_post">): 
 		text: draft.text,
 		visibility: draft.visibility,
 		kind: kindOf(draft),
+		...(draft.article ? { article: draft.article } : {}),
 		createdAt: (ctx.now ?? (() => new Date()))().toISOString(),
 	};
 	await ctx.store.savePost(record);
@@ -379,7 +402,7 @@ export async function editPost(ctx: ToolContext, input: In<"edit_post">): Promis
 	await ctx.store.savePost(
 		existing
 			? { ...existing, text: input.new_text, updatedAt: now }
-			: { urn, url: postUrl(urn), text: input.new_text, visibility: "PUBLIC", kind: "text", createdAt: now, updatedAt: now },
+			: { urn, url: postUrl(urn), text: input.new_text, visibility: "PUBLIC", kind: "text", unverified: true, createdAt: now, updatedAt: now },
 	);
 	return `Post updated in place (likes and comments kept).\nLink: ${postUrl(urn)}`;
 }
@@ -610,6 +633,8 @@ export interface PublisherDeps {
 	fetchImpl?: typeof fetch;
 	now?: () => Date;
 	sleep?: (ms: number) => Promise<void>;
+	/** PUBLIC_FEED_MEMBER_ID, so posts published on schedule also update the website feed. */
+	publicFeedMemberId?: string;
 }
 
 /** A claim older than this is treated as abandoned (the run that took it crashed). */
@@ -636,7 +661,7 @@ export async function publishDuePosts(deps: PublisherDeps): Promise<string[]> {
 
 	const log: string[] = [];
 	for (const { memberId, id } of due) {
-		const store = new Store(deps.kv, memberId);
+		const store = new Store(deps.kv, memberId, { publicFeedMemberId: deps.publicFeedMemberId });
 		const post = await store.getScheduled(id);
 		if (!post) continue;
 		if (post.status === "publishing" && post.claimedAt && now.getTime() - Date.parse(post.claimedAt) < STALE_CLAIM_MS) continue;
@@ -676,6 +701,7 @@ export async function publishDuePosts(deps: PublisherDeps): Promise<string[]> {
 				text: post.text,
 				visibility: post.visibility,
 				kind: post.article ? "article" : post.document ? "document" : post.images ? (post.images.length > 1 ? "images" : "image") : "text",
+				...(post.article ? { article: post.article } : {}),
 				createdAt: now.toISOString(),
 			});
 			await store.deleteScheduled(post);
@@ -819,4 +845,38 @@ export function fileNameFromUrl(url: string): string {
 	} catch {
 		return "document.pdf";
 	}
+}
+
+// ---------- Public website feed ----------
+
+const feedOffMessage =
+	"The public website feed is off for this account, so this won't show anywhere yet. The postline owner turns it on with the PUBLIC_FEED_MEMBER_ID secret (see the README).";
+
+export async function addWebsiteArticle(ctx: ToolContext, input: In<"add_website_article">): Promise<string> {
+	const site = await ctx.store.getWebsiteArticles();
+	const key = articleKey(input.url);
+	const article: WebsiteArticle = {
+		url: input.url,
+		title: input.title.trim(),
+		summary: input.summary.trim(),
+		date: input.date,
+		...(input.label?.trim() ? { label: input.label.trim().toUpperCase() } : {}),
+	};
+	const replaced = site.articles.some((a) => articleKey(a.url) === key);
+	site.articles = [article, ...site.articles.filter((a) => articleKey(a.url) !== key)].slice(0, 50);
+	site.hidden = site.hidden.filter((u) => articleKey(u) !== key);
+	await ctx.store.saveWebsiteArticles(site);
+	return [
+		`${replaced ? "Updated" : "Added"} on the website feed: "${article.title}" (${article.date}). Nothing on LinkedIn changed.`,
+		ctx.store.publicFeedEnabled ? "Websites reading the feed show it within about 10 minutes." : feedOffMessage,
+	].join("\n");
+}
+
+export async function removeWebsiteArticle(ctx: ToolContext, input: In<"remove_website_article">): Promise<string> {
+	const site = await ctx.store.getWebsiteArticles();
+	const key = articleKey(input.url);
+	site.articles = site.articles.filter((a) => articleKey(a.url) !== key);
+	if (!site.hidden.some((u) => articleKey(u) === key)) site.hidden = [...site.hidden, input.url].slice(-200);
+	await ctx.store.saveWebsiteArticles(site);
+	return `Removed from the website feed: ${input.url}. It stays off even if a post links to it; add it again with add_website_article. Nothing on LinkedIn changed.`;
 }

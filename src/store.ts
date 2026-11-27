@@ -13,8 +13,11 @@
  *   upimg:<memberId>:<id>       -> image bytes  (uploaded image; metadata = UploadedImageMeta; expires after 60 days)
  *   sched:<memberId>:<id>       -> ScheduledPost (metadata = ScheduleMeta, so the publisher lists due posts in one call)
  *   media:<memberId>:<id>:<n>   -> image bytes  (images of a scheduled post, frozen when it was scheduled)
+ *   sitearticles:<memberId>     -> WebsiteArticles (articles added for the website feed, and hidden ones)
+ *   feed:<memberId>             -> Feed         (public website feed; only for PUBLIC_FEED_MEMBER_ID, see feed.ts)
  */
 
+import { buildFeed, type Feed, type WebsiteArticles } from "./feed";
 import type { ImportedPost } from "./importer";
 import type { ArticleInput, Visibility } from "./linkedin";
 
@@ -129,6 +132,10 @@ export interface PostRecord {
 	text: string;
 	visibility: Visibility;
 	kind: PostKind;
+	/** The link card, for link posts. Lets the website feed pick up shared articles. */
+	article?: ArticleInput;
+	/** Saved by edit_post for a post postline didn't make, so its visibility isn't known. Kept off the website feed. */
+	unverified?: true;
 	createdAt: string;
 	updatedAt?: string;
 }
@@ -192,12 +199,52 @@ const upimgKey = (memberId: string, id: string) => `upimg:${memberId}:${id}`;
 export const schedKey = (memberId: string, id: string) => `sched:${memberId}:${id}`;
 const mediaKey = (memberId: string, id: string, n: number) => `media:${memberId}:${id}:${n}`;
 
+export interface StoreOptions {
+	/** PUBLIC_FEED_MEMBER_ID. When it is this member, the website feed is rebuilt after every change. */
+	publicFeedMemberId?: string;
+}
+
+/** Reads the public website feed of a member, or null when there isn't one yet. */
+export async function readFeed(kv: KVNamespace, memberId: string): Promise<Feed | null> {
+	return kv.get<Feed>(`feed:${memberId}`, "json");
+}
+
 export class Store {
+	private readonly feedEnabled: boolean;
+
 	constructor(
 		private readonly kv: KVNamespace,
 		private readonly memberId: string,
+		options: StoreOptions = {},
 	) {
 		if (!memberId) throw new Error("Store needs a member ID.");
+		this.feedEnabled = !!options.publicFeedMemberId && options.publicFeedMemberId.trim() === memberId;
+	}
+
+	get publicFeedEnabled(): boolean {
+		return this.feedEnabled;
+	}
+
+	// ---------- Public website feed ----------
+
+	async getWebsiteArticles(): Promise<WebsiteArticles> {
+		const found = await this.kv.get<WebsiteArticles>(`sitearticles:${this.memberId}`, "json");
+		return { articles: found?.articles ?? [], hidden: found?.hidden ?? [] };
+	}
+
+	async saveWebsiteArticles(site: WebsiteArticles): Promise<void> {
+		await this.kv.put(`sitearticles:${this.memberId}`, JSON.stringify(site));
+		await this.refreshFeed();
+	}
+
+	/** Rebuilds the stored feed. Does nothing unless the feed is on for this member. */
+	async refreshFeed(now = new Date()): Promise<Feed | null> {
+		if (!this.feedEnabled) return null;
+		const [own, history, site] = await Promise.all([this.listPosts(100), this.getHistory(), this.getWebsiteArticles()]);
+		const records = (await Promise.all(own.map((p) => this.getPost(p.urn)))).filter((r): r is PostRecord => r !== null);
+		const feed = buildFeed({ records, history: history?.posts ?? [], site, now });
+		await this.kv.put(`feed:${this.memberId}`, JSON.stringify(feed));
+		return feed;
 	}
 
 	async saveDraft(draft: Omit<Draft, "id" | "createdAt">): Promise<Draft> {
@@ -219,6 +266,7 @@ export class Store {
 	async savePost(record: PostRecord): Promise<void> {
 		const meta: PostMeta = { createdAt: record.createdAt, preview: record.text.slice(0, 200) };
 		await this.kv.put(postKey(this.memberId, record.urn), JSON.stringify(record), { metadata: meta });
+		await this.refreshFeed();
 	}
 
 	async getPost(urn: string): Promise<PostRecord | null> {
@@ -227,11 +275,13 @@ export class Store {
 
 	async deletePost(urn: string): Promise<void> {
 		await this.kv.delete(postKey(this.memberId, urn));
+		await this.refreshFeed();
 	}
 
 	async saveHistory(posts: ImportedPost[]): Promise<void> {
 		const history: PostHistory = { importedAt: new Date().toISOString(), posts };
 		await this.kv.put(`history:${this.memberId}`, JSON.stringify(history));
+		await this.refreshFeed();
 	}
 
 	async getHistory(): Promise<PostHistory | null> {
@@ -240,6 +290,7 @@ export class Store {
 
 	async deleteHistory(): Promise<void> {
 		await this.kv.delete(`history:${this.memberId}`);
+		await this.refreshFeed();
 	}
 
 	/** Newest first. */

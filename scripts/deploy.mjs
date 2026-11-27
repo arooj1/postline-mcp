@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const REQUIRED_SECRETS = ["LINKEDIN_CLIENT_ID", "LINKEDIN_CLIENT_SECRET", "COOKIE_ENCRYPTION_KEY"];
-const OPTIONAL_SECRETS = ["ALLOWED_MEMBER_IDS"];
+const OPTIONAL_SECRETS = ["ALLOWED_MEMBER_IDS", "PUBLIC_FEED_MEMBER_ID"];
 const REQUIRED_ENV = ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "MCP_RESOURCE"];
 
 const fail = (msg) => {
