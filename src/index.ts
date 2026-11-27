@@ -6,6 +6,7 @@ import { LinkedInClient } from "./linkedin";
 import { LinkedInHandler } from "./linkedin-handler";
 import { Store } from "./store";
 import {
+	addWebsiteArticle,
 	cancelScheduledPost,
 	commentOnPost,
 	createImageUploadLink,
@@ -21,6 +22,7 @@ import {
 	publishDuePosts,
 	publishPost,
 	reactToPost,
+	removeWebsiteArticle,
 	schedulePost,
 	schemas,
 	searchMyPosts,
@@ -28,7 +30,7 @@ import {
 	type ToolContext,
 } from "./tools";
 
-const VERSION = "1.2.0";
+const VERSION = "1.3.0";
 
 type TextResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
 
@@ -49,7 +51,7 @@ function createServer() {
 
 	const ctx: ToolContext = {
 		props,
-		store: new Store(env.OAUTH_KV, props.memberId),
+		store: new Store(env.OAUTH_KV, props.memberId, { publicFeedMemberId: env.PUBLIC_FEED_MEMBER_ID }),
 		linkedin: new LinkedInClient(props.accessToken, env.LINKEDIN_VERSION || undefined),
 		kv: env.OAUTH_KV,
 		origin: new URL(env.MCP_RESOURCE).origin,
@@ -245,6 +247,30 @@ function createServer() {
 		async (input) => run(() => reactToPost(ctx, input)),
 	);
 
+	server.registerTool(
+		"add_website_article",
+		{
+			title: "Add a LinkedIn article to the website feed",
+			description:
+				"Adds (or updates) one of the user's LinkedIn articles on their public website feed, which their own website reads to show their latest articles. Use it for articles written in LinkedIn's editor, because LinkedIn's API can't publish or read articles. Posts made through postline that link to an article are added automatically. Show the user the title, summary and label first. Changes nothing on LinkedIn.",
+			inputSchema: schemas.add_website_article,
+			annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+		},
+		async (input) => run(() => addWebsiteArticle(ctx, input)),
+	);
+
+	server.registerTool(
+		"remove_website_article",
+		{
+			title: "Remove an article from the website feed",
+			description:
+				"Takes one LinkedIn article off the user's public website feed, including one added automatically from a post. Changes nothing on LinkedIn. Confirm with the user first.",
+			inputSchema: schemas.remove_website_article,
+			annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+		},
+		async (input) => run(() => removeWebsiteArticle(ctx, input)),
+	);
+
 	return server;
 }
 
@@ -281,6 +307,7 @@ export default {
 				kv: bindings.OAUTH_KV,
 				secret: bindings.COOKIE_ENCRYPTION_KEY,
 				version: bindings.LINKEDIN_VERSION || undefined,
+				publicFeedMemberId: bindings.PUBLIC_FEED_MEMBER_ID,
 			}).then((log) => {
 				for (const line of log) console.log(`scheduled: ${line}`);
 			}),

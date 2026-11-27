@@ -13,6 +13,7 @@
 #              LINKEDIN_CLIENT_SECRET
 #              COOKIE_ENCRYPTION_KEY  (openssl rand -hex 32)
 #              ALLOWED_MEMBER_IDS     (optional at first; the sign-in page shows your ID)
+#              PUBLIC_FEED_MEMBER_ID  (optional; turns on /feed.json for that one member)
 
 name: CI
 
@@ -84,4 +85,5 @@ jobs:
           LINKEDIN_CLIENT_SECRET: ${{ secrets.LINKEDIN_CLIENT_SECRET }}
           COOKIE_ENCRYPTION_KEY: ${{ secrets.COOKIE_ENCRYPTION_KEY }}
           ALLOWED_MEMBER_IDS: ${{ secrets.ALLOWED_MEMBER_IDS }}
+          PUBLIC_FEED_MEMBER_ID: ${{ secrets.PUBLIC_FEED_MEMBER_ID }}
         run: node scripts/deploy.mjs

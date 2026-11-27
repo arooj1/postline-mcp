@@ -63,7 +63,7 @@ flowchart TB
         direction TB
         index["index.ts<br/><i>front door and routing</i>"]
         handler["linkedin-handler.ts<br/><i>sign-in pages</i>"]
-        tools["tools.ts<br/><i>the 16 tools</i>"]
+        tools["tools.ts<br/><i>the 18 tools</i>"]
         li["linkedin.ts<br/><i>calls LinkedIn's API</i>"]
         store["store.ts<br/><i>drafts and post records</i>"]
         index --> handler
@@ -171,6 +171,21 @@ sequenceDiagram
 | `delete_imported_history` | Removes imported history from postline | No |
 | `comment_on_post` | Comments on a post as you | Yes |
 | `react_to_post` | Like, celebrate, support, love, insightful or funny | Yes |
+| `add_website_article` | Adds one of your LinkedIn articles to your public website feed | No |
+| `remove_website_article` | Takes an article off your website feed | No |
+
+### Showing your posts on your own website (optional)
+
+Turn on a public feed and your own website can show your latest LinkedIn articles and posts without copying them by hand. Set the optional secret `PUBLIC_FEED_MEMBER_ID` to your member ID (the one in `ALLOWED_MEMBER_IDS`) and redeploy. Your Worker then serves `GET /feed.json`:
+
+```json
+{ "updatedAt": "…", "articles": [{ "url", "title", "summary", "date", "label" }], "posts": [{ "url", "date", "excerpt", "kind" }] }
+```
+
+- **posts**: your newest 3 posts made through postline with **Public** visibility. Connections-only posts are never included.
+- **articles**: up to 6 LinkedIn articles, newest first: ones you add with `add_website_article`, ones a public postline post links to, and ones in your imported history.
+
+LinkedIn's API can't publish or read articles, so an article you write in LinkedIn's editor reaches the feed when a postline post links to it, when you import your history, or when you ask Claude to add it. The feed is rebuilt when something changes and stored as one KV value, so serving it costs one KV read. It covers only that one member and holds nothing that isn't already public on LinkedIn. Leave the secret unset and `/feed.json` returns 404.
 
 ### Writing in your voice
 
@@ -291,6 +306,7 @@ flowchart LR
    | Secret | `LINKEDIN_CLIENT_SECRET` | LinkedIn app → Auth tab |
    | Secret | `COOKIE_ENCRYPTION_KEY` | any long random string, e.g. `openssl rand -hex 32` |
    | Secret | `ALLOWED_MEMBER_IDS` | added in step 5 |
+   | Secret | `PUBLIC_FEED_MEMBER_ID` | optional: turns on the public website feed for that member |
 
    Deploys only run once `MCP_RESOURCE` is set, so forks never deploy by accident.
 4. **Deploy.** Actions tab → **CI** → *Run workflow* (or push to `main`).

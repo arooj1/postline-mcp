@@ -2,6 +2,17 @@
 
 All notable changes to postline-mcp. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] — 2026-11-27
+
+### Added
+- **Public website feed (optional):** with the `PUBLIC_FEED_MEMBER_ID` secret set, `GET /feed.json` serves that member's newest 3 Public posts made through postline and up to 6 LinkedIn articles, so their own website can show them. Built on change and stored as one KV value (`feed:<member>`), so a request costs one KV read. Off (404) when unset.
+- `add_website_article` and `remove_website_article` tools (18 tools), for articles written in LinkedIn's editor, which the API can't publish or read. Neither touches LinkedIn.
+- Post records keep the link card of link posts, so a post that shares a LinkedIn article puts that article on the feed.
+
+### Changed
+- `edit_post` marks records for posts postline didn't make as unverified (visibility unknown); they never go on the feed.
+- README, ARCHITECTURE and PRIVACY describe the feed; the deploy script and CI pass the new optional secret.
+
 ## [1.2.0] — 2026-11-15
 
 ### Added

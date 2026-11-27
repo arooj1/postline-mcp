@@ -28,7 +28,7 @@ Your LinkedIn token never goes to Claude. Claude only holds a key to your Worker
 | File | Role | Think of it as |
 |---|---|---|
 | `wrangler.jsonc` | Worker settings: name, entry file, variables, KV storage, required secrets | The deployment recipe |
-| `src/index.ts` | Entry point. Routes every request, registers the 16 tools, and runs the scheduled publisher (cron) | The front door |
+| `src/index.ts` | Entry point. Routes every request, registers the 18 tools, and runs the scheduled publisher (cron) | The front door |
 | `src/linkedin-handler.ts` | The sign-in pages: consent screen, redirect to LinkedIn, callback | The reception desk |
 | `src/workers-oauth-utils.ts` | Security helpers from Cloudflare: CSRF tokens, cookies, state, consent HTML | The locks on the doors |
 | `src/tools.ts` | What each tool does, plus input rules (schemas) | The job descriptions |
@@ -78,7 +78,7 @@ Read it bottom-up.
 **`createServer()` (line 36)** runs on each `/mcp` request:
 1. It reads the signed-in member's **props**: `memberId`, `name`, `accessToken`, `expiresAt`. These were saved at sign-in and are decrypted by the library.
 2. It builds a `ToolContext` holding those props, a `Store` for that member, and a `LinkedInClient` using that member's token.
-3. It registers the 16 tools. Each registration has:
+3. It registers the 18 tools. Each registration has:
    - a **name** (`draft_post`)
    - a **description** Claude reads to decide when to use it, including rules like "only publish after explicit approval"
    - an **input schema** from `tools.ts`
@@ -133,6 +133,10 @@ Two parts: **schemas** (line 55) describe and validate inputs (max 3000 characte
 | `list_my_posts` | `listMyPosts` line 212 | Reads records from KV only; LinkedIn doesn't allow reading history |
 | `comment_on_post` | `commentOnPost` line 223 | Checks expiry → posts comment as you |
 | `react_to_post` | `reactToPost` line 230 | Checks expiry → adds reaction |
+| `add_website_article` | `addWebsiteArticle` | Saves the article in `sitearticles:<member>` → rebuilds the feed. **No LinkedIn call** |
+| `remove_website_article` | `removeWebsiteArticle` | Removes it and remembers it as hidden → rebuilds the feed. **No LinkedIn call** |
+
+**Public website feed** (`src/feed.ts`, optional): when `PUBLIC_FEED_MEMBER_ID` is set, every change to that member's posts, history or website articles rebuilds one KV value, `feed:<member>`, through `Store.refreshFeed`. `GET /feed.json` (in `linkedin-handler.ts`) serves it with one KV read and no list calls, which keeps the free plan's daily list budget for the cron. Only Public posts made through postline go in; connections-only posts and posts postline only edited (visibility unknown) never do.
 
 Why **draft → publish** is two tools: Claude can't publish in one step. It has to show you the preview and come back with the `draft_id`, and Claude's own approval prompt appears before `publish_post` runs.
 

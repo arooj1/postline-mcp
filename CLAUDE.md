@@ -3,7 +3,7 @@
 A public, MIT-licensed remote MCP connector that lets Claude draft, publish, schedule, edit
 and delete posts on the owner's own LinkedIn profile using **LinkedIn's official API only**.
 Runs as a Cloudflare Worker and is connected as a custom connector in Claude (web, phone,
-desktop). Version 1.2.0; copyright Arooj Qureshi. Not affiliated with LinkedIn.
+desktop). Version 1.3.0; copyright Arooj Qureshi. Not affiliated with LinkedIn.
 
 This repo is public: keep private business details and anything confidential out of it,
 including this file.
@@ -24,10 +24,10 @@ including this file.
 
 ## Layout
 
-`src/index.ts` (routing, the 16 tools, cron publisher), `src/linkedin.ts` (the only file that
+`src/index.ts` (routing, the 18 tools, cron publisher), `src/linkedin.ts` (the only file that
 talks to LinkedIn; fix API changes here), `src/tools.ts` (tool logic, no Cloudflare
 dependencies so it is unit-testable), `src/store.ts` (KV), `src/linkedin-handler.ts` (sign-in
-pages), `src/importer.ts` + `src/import-page.ts` (history import), `src/crypto.ts`,
+pages), `src/importer.ts` + `src/import-page.ts` (history import), `src/crypto.ts`, `src/feed.ts` (optional public website feed at `/feed.json`),
 `test/` (fake LinkedIn and fake KV; never call the real API from tests),
 `docs/ARCHITECTURE.md`, `docs/phase-0-results.md`, `CHANGELOG.md`.
 
@@ -41,7 +41,8 @@ pages), `src/importer.ts` + `src/import-page.ts` (history import), `src/crypto.t
 ## Config and secrets
 
 - Worker secrets: `LINKEDIN_CLIENT_ID`, `LINKEDIN_CLIENT_SECRET`, `COOKIE_ENCRYPTION_KEY`,
-  and `ALLOWED_MEMBER_IDS` (optional at first). Never put them in `wrangler.jsonc` or the repo.
+  `ALLOWED_MEMBER_IDS` (optional at first) and `PUBLIC_FEED_MEMBER_ID` (optional; turns on
+  `/feed.json` for that one member). Never put them in `wrangler.jsonc` or the repo.
 - `MCP_RESOURCE` (the deployed `/mcp` URL) is a repository **variable**; deploys only run in
   a repo that sets it, so forks never deploy. `LINKEDIN_VERSION` (YYYYMM) must be bumped
   before LinkedIn retires the version (about a year).
@@ -56,6 +57,14 @@ Verified live through Claude on 2026-11-14: text, link, image, image upload, car
 multi-image, scheduling, edit, delete, list, comment and reaction. History import is
 unit-tested and awaiting its first live run. Image upload (v1.2.0) was awaiting a live check
 at the last update.
+
+## Public website feed (v1.3.0, 2026-11-27)
+
+`/feed.json` lists the feed member's newest 3 **Public** postline posts and up to 6 LinkedIn
+articles (hand-added with `add_website_article`, linked from a public post, or in the imported
+history). It is rebuilt on every change and stored as one KV value, so serving it never uses
+KV list calls. Never put connections-only posts, or edited posts of unknown visibility, in it.
+LinkedIn articles still can't be published through the API; the feed only lists their links.
 
 ## Keeping this file current
 
